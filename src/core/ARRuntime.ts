@@ -1,18 +1,22 @@
-import { Quaternion, Raycaster } from 'three';
-import { WebXRAdapter, type PlacementState } from '../adapters/WebXRAdapter';
-import { EXPERIENCES, targetsUrl, type ExperienceConfig, type HotspotConfig, type RuntimeOptions } from '../config/experiences';
+import { Raycaster, Vector2 } from 'three';
+import { EightWallAdapter, type PlacementState } from '../adapters/EightWallAdapter';
+import { EXPERIENCES, type ExperienceConfig, type HotspotConfig, type RuntimeOptions } from '../config/experiences';
 import type { Experience } from '../content/Experience';
 import { TyreExperience } from '../content/TyreExperience';
 import { VideoExperience } from '../content/VideoExperience';
 import { ContentVideo } from '../services/ContentVideo';
+import { EngineError } from '../services/errors';
 import type { ARErrorKind, PoseSample, TrackingStats } from '../types/ar';
+import type { ImageTargetData, XR8Engine } from '../types/xr8';
 import { LightingManager } from './LightingManager';
 import { ModelManager } from './ModelManager';
 import { detectTier, qualityFor } from './PerformanceManager';
-import { SceneManager } from './SceneManager';
+import { SceneManager, sizeCanvas } from './SceneManager';
 import { TrackingManager } from './TrackingManager';
 
 export interface RuntimeEvents {
+  /** The user allowed the camera, and the engine is starting. */
+  cameraGranted(): void;
   progress(fraction: number, label: string): void;
   found(config: ExperienceConfig): void;
   contentReady(): void;
@@ -20,7 +24,7 @@ export interface RuntimeEvents {
   recovered(): void;
   hotspot(hotspot: HotspotConfig | null): void;
   placementState(state: PlacementState): void;
-  xrEnded(): void;
+  ended(): void;
   /** The browser refused to start a muted video until the next tap. */
   videoBlocked(): void;
   /** Returns true if video was blocked, in which case the next tap is for restarting it. */
@@ -31,19 +35,18 @@ export interface RuntimeEvents {
   pose?(sample: PoseSample, runtime: ARRuntime): void;
 }
 
-const rayRotation = new Quaternion();
-
 /**
- * Everything that needs Three.js and a tracker, split out of ARManager so the welcome screen stays
- * small. One runtime exists per running session and is thrown away afterwards, which is how the XR
- * session, and with it the camera, and every GPU resource get released on a single code path.
+ * Everything that needs Three.js and the engine, split out of ARManager so the welcome screen stays
+ * small. One runtime exists per running session and is thrown away afterwards, which is how the camera
+ * and every GPU resource get released on a single code path.
  */
 export class ARRuntime {
   scene: SceneManager | null = null;
 
-  private session: XRSession | null = null;
+  private adapter: EightWallAdapter | null = null;
   private lighting: LightingManager | null = null;
   private models: ModelManager | null = null;
+  private readonly canvas = document.createElement('canvas');
   private readonly tracking: TrackingManager;
   private experience: Experience | null = null;
   private readonly experiences = new Map<string, Promise<Experience>>();
@@ -52,10 +55,12 @@ export class ARRuntime {
   private loadToken = 0;
   private unsubscribeFrame: (() => void) | null = null;
   private readonly raycaster = new Raycaster();
+  private readonly pointer = new Vector2();
   private disposed = false;
 
   constructor(
     private readonly container: HTMLElement,
+    private readonly engine: XR8Engine,
     private readonly options: RuntimeOptions,
     private readonly events: RuntimeEvents,
   ) {
@@ -64,54 +69,30 @@ export class ARRuntime {
       pose: this.onPose,
       lost: this.onLost,
       recovered: this.onRecovered,
-      ended: () => this.events.xrEnded(),
+      ended: () => this.events.ended(),
     });
   }
 
-  /**
-   * Locks posters. `session` must have been requested synchronously inside the tap that asked for it,
-   * and with the same poster list that the target indices refer to.
-   */
-  async startPosterTracking(session: XRSession) {
-    this.session = session;
-    this.createScene();
+  /** Locks posters. Poses refer to posters by their place in `targets`. */
+  async startPosterTracking(targets: ImageTargetData[]) {
+    await this.startEngine('poster', targets);
     const deepLink = this.options.deepLink;
-    // Content comes first, so it is ready to show on the very first pose.
+    window.addEventListener('click', this.onTap);
     if (deepLink) {
       try {
+        // Otherwise the first poster found has to load before it shows.
         await this.prepareExperience(deepLink, (f) => this.events.progress(f, 'Loading content'));
       } catch (err) {
         this.events.fatal('asset-load', err);
         throw err;
       }
     }
-    const quality = qualityFor(detectTier());
-    await this.tracking.start(
-      new WebXRAdapter({
-        session,
-        scene: this.scene!,
-        mode: 'poster',
-        locator: {
-          targetsUrl: targetsUrl(deepLink?.id ?? null),
-          shortSide: quality.recogniserShortSide,
-          targetCount: deepLink ? 1 : EXPERIENCES.length,
-          assumedWidth: this.options.printWidthMeters,
-          widthIsKnown: this.options.printWidthKnown,
-          onFatal: (detail) => this.events.fatal('tracking-init', detail),
-        },
-        getPlaceable: () => this.experience,
-        onPlacementState: () => undefined,
-      }),
-    );
-    session.addEventListener('select', this.onXRSelect);
     this.events.progress(1, 'Ready');
     void this.warmOtherPosters();
   }
 
-  /** `session` must have been requested synchronously inside the tap that asked for it. */
-  async startPlacement(session: XRSession, config: ExperienceConfig) {
-    this.session = session;
-    this.createScene();
+  async startPlacement(config: ExperienceConfig) {
+    await this.startEngine('room', []);
     try {
       this.experience = await this.prepareExperience(config, (f) => this.events.progress(f, 'Loading content'));
     } catch (err) {
@@ -119,18 +100,7 @@ export class ARRuntime {
       throw err;
     }
     this.experience.root.visible = false;
-    this.lighting!.enableXREstimation();
-
-    await this.tracking.start(
-      new WebXRAdapter({
-        session,
-        scene: this.scene!,
-        mode: 'room',
-        getPlaceable: () => this.experience,
-        onPlacementState: (state) => this.events.placementState(state),
-      }),
-    );
-    session.addEventListener('select', this.onXRSelect);
+    window.addEventListener('click', this.onTap);
   }
 
   stats(): TrackingStats | null {
@@ -141,14 +111,13 @@ export class ARRuntime {
     return this.scene?.performance.fps ?? 0;
   }
 
-  /** Ends the session, which turns the camera off, and releases the GPU. Safe to call more than once. */
+  /** Stops the engine, which turns the camera off, and releases the GPU. Safe to call more than once. */
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
     this.loadToken += 1;
+    window.removeEventListener('click', this.onTap);
     this.tracking.stop();
-    this.session?.removeEventListener('select', this.onXRSelect);
-    this.session?.end().catch(() => undefined); // Already ended is fine.
     this.unsubscribeFrame?.();
     this.experience = null;
     for (const loading of this.experiences.values()) {
@@ -159,15 +128,36 @@ export class ARRuntime {
     this.models?.dispose();
     this.scene?.dispose();
     this.scene = null;
+    this.canvas.remove();
   }
 
-  private createScene() {
+  /** Resolves when the camera is running and the scene exists. */
+  private startEngine(mode: 'poster' | 'room', targets: ImageTargetData[]) {
+    const quality = qualityFor(detectTier());
+    this.canvas.className = 'ar-canvas';
+    this.container.appendChild(this.canvas);
+    sizeCanvas(this.canvas, this.container, Math.min(window.devicePixelRatio || 1, quality.maxPixelRatio));
+
+    this.adapter = new EightWallAdapter({
+      engine: this.engine,
+      canvas: this.canvas,
+      mode,
+      targets,
+      createScene: (gl) => this.createScene(gl),
+      onCameraGranted: () => this.events.cameraGranted(),
+      onFatal: (detail) => this.events.fatal('tracking-init', detail),
+      getPlaceable: () => this.experience,
+      onPlacementState: (state) => this.events.placementState(state),
+    });
+    return this.tracking.start(this.adapter);
+  }
+
+  private createScene(gl: WebGL2RenderingContext) {
     let scene: SceneManager;
     try {
-      scene = new SceneManager(this.container, qualityFor(detectTier()));
+      scene = new SceneManager(this.container, gl, qualityFor(detectTier()));
     } catch (err) {
-      this.events.fatal('webgl-init', err);
-      throw err;
+      throw new EngineError('webgl-init', err);
     }
     this.scene = scene;
     this.lighting = new LightingManager(scene.renderer, scene.scene);
@@ -177,6 +167,7 @@ export class ARRuntime {
       this.tracking.tick();
       this.experience?.update(dt, time);
     });
+    return scene;
   }
 
   /** Loads each poster's content once, and keeps it, so that going back to a poster is instant. */
@@ -261,19 +252,19 @@ export class ARRuntime {
     this.events.recovered();
   };
 
-  private readonly onXRSelect = (event: XRInputSourceEvent) => {
+  private readonly onTap = (event: MouseEvent) => {
+    if ((event.target as Element).closest('button, a')) return;
     if (this.events.takeVideoBlocked()) {
       this.videos.forEach((video) => video.retry());
       return;
     }
+    this.adapter?.tap();
     const experience = this.experience;
-    const refSpace = this.scene?.renderer.xr.getReferenceSpace();
-    if (!experience || !refSpace || !this.entered) return;
-    const pose = event.frame.getPose(event.inputSource.targetRaySpace, refSpace);
-    if (!pose) return;
-    const { position: o, orientation: q } = pose.transform;
-    this.raycaster.ray.origin.set(o.x, o.y, o.z);
-    this.raycaster.ray.direction.set(0, 0, -1).applyQuaternion(rayRotation.set(q.x, q.y, q.z, q.w));
+    const scene = this.scene;
+    if (!experience || !scene || !this.entered) return;
+    const rect = this.canvas.getBoundingClientRect();
+    this.pointer.set(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1);
+    this.raycaster.setFromCamera(this.pointer, scene.camera);
     this.events.hotspot(experience.select(this.raycaster));
   };
 }

@@ -13,7 +13,7 @@ export interface TrackingListener {
   ended(reason?: string): void;
 }
 
-/** ARCore has already confirmed an image before reporting it, so content appears on its first pose. */
+/** The engine has already confirmed an image before reporting it, so content appears on its first pose. */
 const WARMUP_FRAMES = 1;
 /** Rides out hands, glare and motion blur without flicker, and is short enough to feel responsive. */
 const HOLD_MS = 450;

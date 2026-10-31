@@ -23,12 +23,12 @@ export interface ExperienceConfig {
   target: string;
   hero?: string;
   logo?: string;
-  /** Can also be placed in the room with WebXR hit testing. */
+  /** Can also be placed on the floor of the room. */
   placeable?: boolean;
   hotspots?: HotspotConfig[];
 }
 
-// Order matters: ARCore reports a found poster by its index in the list given to the session.
+// Order matters: a found poster is reported by its index in the list of targets given to the engine.
 export const EXPERIENCES: ExperienceConfig[] = [
   {
     id: 'ceat-tyre',
@@ -109,29 +109,20 @@ export const EXPERIENCES: ExperienceConfig[] = [
   },
 ];
 
-export const targetsUrl = (id: string | null) => asset(`targets/${id ?? 'all'}.mind`);
+export const targetUrl = (id: string) => asset(`targets/${id}.json`);
 
 export const experienceById = (id: string | null | undefined) => EXPERIENCES.find((e) => e.id === id) ?? null;
 
-/** Used when `?w=` doesn't give the print's real width, until the camera's movement reveals it. */
-const DEFAULT_PRINT_WIDTH_METERS = 0.6;
-
-/** `?w=` gives the printed width in metres; `?debug` shows live tracking stats. */
+/** `?t=` limits the session to one poster; `?debug` shows live tracking stats. */
 export interface RuntimeOptions {
   deepLink: ExperienceConfig | null;
   debug: boolean;
-  printWidthMeters: number;
-  /** `?w=` was given, so the width is known and doesn't have to be measured. */
-  printWidthKnown: boolean;
 }
 
 export function readRuntimeOptions(search = window.location.search): RuntimeOptions {
   const params = new URLSearchParams(search);
-  const width = Number(params.get('w'));
   return {
     deepLink: experienceById(params.get('t')),
     debug: params.has('debug'),
-    printWidthMeters: width > 0 && width < 20 ? width : DEFAULT_PRINT_WIDTH_METERS,
-    printWidthKnown: width > 0 && width < 20,
   };
 }

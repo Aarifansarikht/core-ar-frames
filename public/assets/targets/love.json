@@ -1,0 +1,15 @@
+{
+  "imagePath": "assets/targets/love_luminance.jpg",
+  "metadata": null,
+  "name": "love",
+  "type": "PLANAR",
+  "properties": {
+    "left": 254,
+    "top": 0,
+    "width": 1541,
+    "height": 2054,
+    "isRotated": false,
+    "originalWidth": 2048,
+    "originalHeight": 2054
+  }
+}

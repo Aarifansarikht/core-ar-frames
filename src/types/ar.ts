@@ -15,9 +15,9 @@ export type ARPhase =
 
 export type ARErrorKind =
   | 'camera-denied'
-  | 'xr-camera'
+  | 'motion-denied'
+  | 'camera-failed'
   | 'tracking-init'
-  | 'xr-session'
   | 'asset-load'
   | 'webgl-init'
   | 'webgl-lost'
@@ -31,38 +31,36 @@ export interface ARErrorInfo {
   canRetry: boolean;
 }
 
-export type TrackingKind = 'webxr';
+export type TrackingKind = '8thwall';
 
 /** One tracker result. `matrix` is valid only for the synchronous duration of the call. */
 export interface PoseSample {
   targetIndex: number;
-  /** Content root to the WebXR reference space. */
+  /** Content root to the engine's world. */
   matrix: Matrix4;
-  /** 1 when ARCore sees the poster now, 0.5 when it holds the poster's last known place in the room. */
+  /** 1 when the engine sees the poster now, 0.5 when it holds the poster's last known place in the room. */
   confidence: number;
-  /** Time of the XR frame, in seconds. */
+  /** Time of the frame, in seconds. */
   time: number;
 }
 
 export interface TrackingStats {
   engine: string;
-  /** XR frames per second. */
+  /** Engine frames per second. */
   trackFps: number;
   confidence: number;
-  /** The current poster: tracked (seen now), emulated (a remembered place) or none. */
+  /** The current poster: tracked (seen now), held (a remembered place) or none. */
   imageState: string;
-  /** ARCore's verdict on each poster's detail, in list order. Only with its own image tracking. */
-  imageScores: string[];
-  /** The poster width measured so far, in metres. */
-  measuredWidth: number;
-  /** Time taken by the last recognition, in milliseconds. Only without ARCore's own image tracking. */
-  recogniseMs: number;
+  /** How the engine is tracking the room: NORMAL or LIMITED. */
+  worldState: string;
+  /** The current poster's id. */
+  target: string;
 }
 
 /** What a tracking adapter reports to TrackingManager. Adapters never touch UI or content. */
 export interface TrackingSink {
   pose(sample: PoseSample): void;
   miss(): void;
-  /** The session ended for a reason outside our control (e.g. the user left immersive mode). */
+  /** The session ended for a reason outside our control. */
   ended(reason?: string): void;
 }

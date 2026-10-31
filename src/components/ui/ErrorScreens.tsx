@@ -25,12 +25,11 @@ export function ErrorScreen({ error, manager }: { error: ARErrorInfo; manager: A
   );
 }
 
-const unsupportedMessage = ({ unsupported, isIOS, isInAppBrowser }: Capabilities) => {
+const unsupportedMessage = ({ unsupported, isInAppBrowser }: Capabilities) => {
   if (unsupported === 'insecure') return 'AR needs a secure connection. Open this page using an https:// address.';
-  if (isIOS) return 'This experience uses Google ARCore, which isn’t available on iPhone or iPad. Please open this link on an ARCore-supported Android phone.';
-  if (isInAppBrowser) return 'This in-app browser can’t run AR. Open this link in Chrome instead.';
+  if (isInAppBrowser) return 'This in-app browser can’t run AR. Open this link in Safari or Chrome instead.';
   if (unsupported === 'no-webgl') return 'This browser doesn’t support the 3D graphics this experience needs. Please update it.';
-  return 'This experience needs Chrome on an ARCore-supported Android phone.';
+  return 'Please open this link on a phone, in Safari on iPhone or Chrome on Android.';
 };
 
 export function UnsupportedScreen({ capabilities }: { capabilities: Capabilities }) {

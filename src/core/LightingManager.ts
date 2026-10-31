@@ -1,16 +1,13 @@
 import { AmbientLight, DirectionalLight, Group, PMREMGenerator, type Scene, type Texture, type WebGLRenderer } from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { XREstimatedLight } from 'three/addons/webxr/XREstimatedLight.js';
 
 /**
  * Image-based lighting for PBR content. The project ships no HDRI, so reflections come from a
- * procedural studio room, which keeps the rim and chrome response without another download. In
- * WebXR the environment is replaced with ARCore's light estimate whenever the browser provides it.
+ * procedural studio room, which keeps the rim and chrome response without another download.
  */
 export class LightingManager {
   private readonly rig = new Group();
   private environment: Texture | null = null;
-  private estimated: XREstimatedLight | null = null;
 
   constructor(
     private readonly renderer: WebGLRenderer,
@@ -37,28 +34,10 @@ export class LightingManager {
     this.scene.add(this.rig);
   }
 
-  /** Uses ARCore's estimate of the real room's light, if the session granted light-estimation. */
-  enableXREstimation() {
-    if (this.estimated) return;
-    const estimated = new XREstimatedLight(this.renderer);
-    estimated.addEventListener('estimationstart', () => {
-      this.scene.add(estimated);
-      this.scene.remove(this.rig);
-      if (estimated.environment) this.scene.environment = estimated.environment;
-    });
-    estimated.addEventListener('estimationend', () => {
-      this.scene.remove(estimated);
-      this.scene.add(this.rig);
-      this.scene.environment = this.environment;
-    });
-    this.estimated = estimated;
-  }
-
   dispose() {
     this.scene.remove(this.rig);
     this.scene.environment = null;
     this.environment?.dispose();
     this.environment = null;
-    this.estimated = null;
   }
 }

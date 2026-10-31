@@ -14,10 +14,9 @@ export function DebugHud() {
       ref.current.textContent = [
         s.engine,
         `render ${s.renderFps.toFixed(0)} fps`,
-        `xr     ${s.trackFps.toFixed(0)} fps`,
-        `image  ${s.imageState}  ${s.measuredWidth.toFixed(3)} m`,
-        `scores ${s.imageScores.join(' ') || '-'}`,
-        `find   ${s.recogniseMs.toFixed(0)} ms  conf ${(s.confidence * 100).toFixed(0)}%`,
+        `engine ${s.trackFps.toFixed(0)} fps`,
+        `image  ${s.imageState}  ${s.target}`,
+        `world  ${s.worldState}  conf ${(s.confidence * 100).toFixed(0)}%`,
       ].join('\n');
     }, 300);
     return () => window.clearInterval(timer);

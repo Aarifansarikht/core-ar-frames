@@ -141,6 +141,8 @@ export class TyreExperience implements Experience {
       const floorShadow = new Mesh(source.geometry, source.material);
       floorShadow.renderOrder = source.renderOrder;
       floorShadow.rotation.x = -Math.PI / 2;
+      // Authored to spread across a poster, which at life size would darken most of the room.
+      floorShadow.scale.setScalar(0.3);
       floorShadow.position.fromArray(this.placement.contactPoint('floor'));
       floorShadow.position.y += 0.001;
       this.root.add(floorShadow);

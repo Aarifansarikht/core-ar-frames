@@ -230,6 +230,17 @@ button {
   margin-bottom: 10px;
 }
 
+.legal {
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.legal a {
+  color: inherit;
+}
+
 /* Permission, error */
 .card {
   display: flex;
@@ -663,8 +674,8 @@ button {
   }
 }
 
-/* Blurring what's behind the HUD means re-reading the composited AR frame: a real cost on phones. */
-:xr-overlay * {
+/* Blurring what's behind the HUD means re-reading the AR frame: a real cost on phones. */
+.hud * {
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
 }

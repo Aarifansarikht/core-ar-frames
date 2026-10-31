@@ -1,46 +1,47 @@
-// Compiles the supplied target images into MindAR .mind feature sets. The compiler is GPU-based,
-// so it runs in headless Chrome via a small page served by Vite.
-//   all.mind        every poster, used when scanning without a deep link
-//   <id>.mind       one poster, used for /?t=<id> QR deep links (faster, no cross-target matches)
-import { mkdirSync, writeFileSync, statSync } from 'node:fs';
+// Prepares each poster for the 8th Wall engine, in the same format as @8thwall/image-target-cli, which
+// only runs interactively. The engine tracks a 3:4 crop, so landscape posters are turned on their side
+// and the largest centred 3:4 area is used.
+//   <id>.json             what the engine is given, including the crop
+//   <id>_luminance.jpg    the 480 x 640 greyscale image that it extracts features from
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createServer } from 'vite';
-import { chromium } from 'playwright-core';
+import sharp from 'sharp';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const ids = ['ceat-tyre', 'basketball', 'flower', 'jelly', 'love'];
 const outDir = join(root, 'public', 'assets', 'targets');
+rmSync(outDir, { recursive: true, force: true });
 mkdirSync(outDir, { recursive: true });
 
-const server = await createServer({ root, server: { port: 5199, strictPort: true }, logLevel: 'warn' });
-await server.listen();
-const browser = await chromium.launch({
-  channel: 'chrome',
-  headless: true,
-  args: ['--use-angle=d3d11', '--ignore-gpu-blocklist', '--enable-gpu-rasterization'],
-});
-const page = await browser.newPage();
-page.on('pageerror', (e) => console.error('page error:', e.message));
-page.on('console', (m) => console.log(`[page] ${m.text()}`));
-page.setDefaultTimeout(0);
-await page.goto('http://localhost:5199/scripts/compile-page.html');
-await page.waitForFunction(() => window.compileReady === true, null, { timeout: 120000 });
-console.log('renderer:', await page.evaluate(() => window.gpuName()));
+for (const id of ids) {
+  const source = join(root, 'public', 'assets', 'experiences', id, 'target.jpg');
+  const { width: w, height: h } = await sharp(source).metadata();
+  const isRotated = w > h;
+  const [width, height] = isRotated ? [h, w] : [w, h];
 
-const compile = async (name, list) => {
-  const t0 = Date.now();
-  const urls = list.map((id) => `/assets/experiences/${id}/target.jpg`);
-  const b64 = await page.evaluate((u) => window.compileTargets(u), urls);
-  const file = join(outDir, `${name}.mind`);
-  writeFileSync(file, Buffer.from(b64, 'base64'));
-  console.log(`${name}.mind  ${(statSync(file).size / 1024).toFixed(0)} KB  ${((Date.now() - t0) / 1000).toFixed(1)}s`);
-};
+  // The same rounding as the CLI's default crop.
+  const crop = width / 3 > height / 4 ? { width: Math.round((height * 3) / 4), height } : { width, height: Math.round((width * 4) / 3) };
+  const left = Math.round((width - crop.width) / 2);
+  const top = Math.round((height - crop.height) / 2);
 
-const only = process.argv.slice(2);
-for (const id of ids) if (!only.length || only.includes(id)) await compile(id, [id]);
-if (!only.length || only.includes('all')) await compile('all', ids);
+  const upright = await sharp(source).rotate(isRotated ? 90 : 0).toBuffer();
+  const luminance = `${id}_luminance.jpg`;
+  await sharp(upright)
+    .extract({ left, top, ...crop })
+    .resize({ width: 480, height: 640 })
+    .grayscale()
+    .jpeg({ quality: 90 })
+    .toFile(join(outDir, luminance));
 
-await browser.close();
-await server.close();
-process.exit(0);
+  const data = {
+    imagePath: `assets/targets/${luminance}`,
+    metadata: null,
+    name: id,
+    type: 'PLANAR',
+    properties: { left, top, ...crop, isRotated, originalWidth: width, originalHeight: height },
+  };
+  writeFileSync(join(outDir, `${id}.json`), `${JSON.stringify(data, null, 2)}\n`);
+  const covered = (crop.width * crop.height) / (width * height);
+  console.log(`${id}  ${isRotated ? 'rotated, ' : ''}crop covers ${(covered * 100).toFixed(0)}% of the poster`);
+}

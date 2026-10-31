@@ -1,28 +1,28 @@
+import { copyFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, type PluginOption } from 'vite';
 import react from '@vitejs/plugin-react';
 import basicSsl from '@vitejs/plugin-basic-ssl';
 
-const tfjsLite = fileURLToPath(new URL('./src/vendor/tfjs-lite.ts', import.meta.url));
+/** index.html loads the engine as a plain script. Only these files are used: faces and sky aren't. */
+function copyEngine() {
+  const from = fileURLToPath(new URL('./node_modules/@8thwall/engine-binary/dist/', import.meta.url));
+  const to = fileURLToPath(new URL('./public/external/xr/', import.meta.url));
+  mkdirSync(to, { recursive: true });
+  copyFileSync(`${from}xr.js`, `${to}xr.js`);
+  copyFileSync(`${from}xr-slam.js`, `${to}xr-slam.js`);
+  copyFileSync(`${from}LICENSE`, `${to}LICENSE.txt`);
+}
 
 export default defineConfig(({ mode }) => {
+  copyEngine();
   const plugins: PluginOption[] = [react()];
-  // WebXR needs a secure context. `npm run dev:https` gives phones on the LAN one.
+  // The camera needs a secure context. `npm run dev:https` gives phones on the LAN one.
   if (mode === 'https') plugins.push(basicSsl());
 
   return {
     base: './',
     plugins,
-    resolve: {
-      // MindAR imports the full tfjs umbrella but its recogniser only uses core + the WebGL backend.
-      alias: { '@tensorflow/tfjs': tfjsLite },
-    },
-    // MindAR ships source that uses `?worker&inline`, which only Vite's own pipeline understands.
-    optimizeDeps: {
-      exclude: ['mind-ar'],
-      include: ['mind-ar > @msgpack/msgpack', 'mind-ar > tinyqueue', 'mind-ar > ml-matrix', 'mind-ar > svd-js'],
-    },
-    worker: { format: 'es' },
     build: {
       target: 'es2021',
       chunkSizeWarningLimit: 1500,

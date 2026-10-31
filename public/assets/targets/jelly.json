@@ -1,0 +1,15 @@
+{
+  "imagePath": "assets/targets/jelly_luminance.jpg",
+  "metadata": null,
+  "name": "jelly",
+  "type": "PLANAR",
+  "properties": {
+    "left": 0,
+    "top": 77,
+    "width": 1520,
+    "height": 2027,
+    "isRotated": false,
+    "originalWidth": 1520,
+    "originalHeight": 2180
+  }
+}

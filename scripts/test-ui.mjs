@@ -1,7 +1,7 @@
-// Drives every user-facing state in real Chrome. ARCore can't run on a desktop, so most cases use a
-// scripted stand-in for navigator.xr. The recogniser in the last section is the real one, looking at a
-// drawn camera image with a known camera path. Nothing here measures ARCore itself or a real camera:
-// only test-device.mjs can do that.
+// Drives every user-facing state in real Chrome, with the real 8th Wall engine looking at a simulated
+// camera: a drawn image of the poster, fed in through getUserMedia, with steady motion sensors. So the
+// recognition and overlay alignment measured here are the engine's own, but with a perfect image. Blur,
+// glare, real lenses and real movement are only covered by test-device.mjs.
 // Screenshots land in .test-output/ui-*.png.
 //
 //   npm run build && npm run test:ui
@@ -26,105 +26,75 @@ const check = (name, ok, detail = '') => {
 };
 
 const browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--use-angle=d3d11', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required', '--host-resolver-rules=MAP insecure.test 127.0.0.1'] });
-const phone = { viewport: { width: 412, height: 915 }, deviceScaleFactor: 2, hasTouch: true };
+const ANDROID = 'Mozilla/5.0 (Linux; Android 14; CPH2359) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36';
+const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
+const phone = { viewport: { width: 412, height: 915 }, deviceScaleFactor: 2, hasTouch: true, isMobile: true, userAgent: ANDROID, permissions: ['camera', 'accelerometer', 'gyroscope', 'magnetometer'] };
+const CAMERA = { width: 720, height: 1280 };
 
-/** Runs in the page. `reject` makes requestSession fail with that DOMException name. */
-function installFakeXR({ reject = null, grant = ['image-tracking', 'dom-overlay'] }) {
-  const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
-  const near = 0.02;
-  const far = 60;
-  const f = 1 / Math.tan((60 * Math.PI) / 360);
-  const aspect = innerWidth / innerHeight;
-  const projection = new Float32Array([f / aspect, 0, 0, 0, 0, f, 0, 0, 0, 0, -(far + near) / (far - near), -1, 0, 0, (-2 * far * near) / (far - near), 0]);
-  const transform = (matrix) => ({
-    matrix: new Float32Array(matrix),
-    position: { x: matrix[12], y: matrix[13], z: matrix[14], w: 1 },
-    orientation: { x: 0, y: 0, z: 0, w: 1 },
-  });
-  const space = (matrix = identity) => ({ matrix, getOffsetReferenceSpace() { return this; }, addEventListener() {}, removeEventListener() {} });
-
-  const fake = { requests: [], session: null, results: [], hits: [], ended: 0, space, lastFrame: null };
-  window.__fakeXR = fake;
-
-  const frame = (session) => ({
-    session,
-    getViewerPose: () => ({ transform: transform(identity), views: [{ eye: 'none', projectionMatrix: projection, transform: transform(identity) }] }),
-    getPose: (s) => ({ transform: transform(s.matrix) }),
-    getImageTrackingResults: () => fake.results,
-    getHitTestResults: () => fake.hits.map((matrix) => ({ getPose: () => ({ transform: transform(matrix) }) })),
-    getLightEstimate: () => null,
-  });
-
-  class FakeSession extends EventTarget {
-    renderState = {};
-    inputSources = [];
-    environmentBlendMode = 'alpha-blend';
-    visibilityState = 'visible';
-    constructor(init) {
-      super();
-      this.enabledFeatures = [...(init.requiredFeatures ?? []), ...(init.optionalFeatures ?? []).filter((f) => grant.includes(f))];
+/** Runs in the page. Replaces the camera and motion sensors. `camera` and `motion` make them fail. */
+function installSimulatedPhone({ camera = 'ok', motion = 'none', width, height }) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  const sim = { image: null, scale: 0.7, x: 0, y: 0, stream: null, cameraCalls: 0, motionPrompts: 0 };
+  window.__sim = sim;
+  window.__showPoster = (id, options = {}) => {
+    Object.assign(sim, { scale: 0.7, x: 0, y: 0 }, options);
+    if (!id) {
+      sim.image = null;
+      return;
     }
-    updateRenderState(state) { Object.assign(this.renderState, state); }
-    updateTargetFrameRate() { return Promise.resolve(); }
-    async requestReferenceSpace() { return space(); }
-    async requestHitTestSource() { return { cancel() {} }; }
-    async getTrackedImageScores() { return fake.requests.at(-1).trackedImages.map(() => 'trackable'); }
-    requestAnimationFrame(callback) {
-      return requestAnimationFrame((t) => {
-        fake.lastFrame = frame(this);
-        callback(t, fake.lastFrame);
-      });
-    }
-    cancelAnimationFrame(id) { cancelAnimationFrame(id); }
-    async end() {
-      if (fake.session !== this) return;
-      fake.session = null;
-      fake.ended += 1;
-      this.dispatchEvent(new Event('end'));
-    }
-  }
-
-  // three.js creates these for the session it is given, and real ones reject a stand-in.
-  Object.defineProperty(window, 'XRWebGLBinding', { value: undefined, configurable: true });
-  window.XRWebGLLayer = class {
-    framebuffer = null;
-    antialias = false;
-    ignoreDepthValues = true;
-    constructor(_session, gl) {
-      this.framebufferWidth = gl.drawingBufferWidth;
-      this.framebufferHeight = gl.drawingBufferHeight;
-    }
-    getViewport() { return { x: 0, y: 0, width: this.framebufferWidth, height: this.framebufferHeight }; }
+    const image = new Image();
+    image.src = `assets/experiences/${id}/target.jpg`;
+    sim.image = image;
   };
-  WebGL2RenderingContext.prototype.makeXRCompatible = async () => undefined;
+  setInterval(() => {
+    ctx.fillStyle = '#6b6f76';
+    ctx.fillRect(0, 0, width, height);
+    // A room has detail in it, which world tracking needs. A blank wall would make it give up.
+    for (let i = 0; i < 80; i += 1) {
+      ctx.fillStyle = i % 2 ? '#222' : '#ddd';
+      ctx.fillRect((i * 97) % width, (i * 211) % height, 14, 14);
+    }
+    const { image, scale, x, y } = sim;
+    if (image?.complete && image.naturalWidth) {
+      const w = width * scale;
+      const h = (w * image.naturalHeight) / image.naturalWidth;
+      ctx.drawImage(image, width / 2 + x - w / 2, height / 2 + y - h / 2, w, h);
+    }
+  }, 33);
 
-  Object.defineProperty(navigator, 'xr', {
-    configurable: true,
-    value: Object.assign(new EventTarget(), {
-      isSessionSupported: async () => true,
-      requestSession: (mode, init) => {
-        fake.requests.push({ ...init, mode, activated: navigator.userActivation.isActive });
-        if (reject) return Promise.reject(new DOMException('rejected by test', reject));
-        fake.session = new FakeSession(init);
-        return Promise.resolve(fake.session);
-      },
-    }),
-  });
+  navigator.mediaDevices.getUserMedia = async () => {
+    sim.cameraCalls += 1;
+    if (camera !== 'ok') throw new DOMException('refused by test', camera);
+    sim.stream = canvas.captureStream(30);
+    return sim.stream;
+  };
+  navigator.mediaDevices.enumerateDevices = async () => [{ kind: 'videoinput', deviceId: 'simulated', label: 'simulated', groupId: 'g' }];
+
+  // On an iPhone, motion events come only after a prompt that must be raised by a tap.
+  if (motion !== 'none') {
+    const requestPermission = async () => {
+      sim.motionPrompts += 1;
+      sim.promptInTap = navigator.userActivation.isActive;
+      return motion;
+    };
+    DeviceOrientationEvent.requestPermission = requestPermission;
+    DeviceMotionEvent.requestPermission = requestPermission;
+  }
+  setInterval(() => {
+    window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', { alpha: 0, beta: 90, gamma: 0, absolute: false }));
+    window.dispatchEvent(new DeviceMotionEvent('devicemotion', { acceleration: { x: 0, y: 0, z: 0 }, accelerationIncludingGravity: { x: 0, y: 9.8, z: 0 }, rotationRate: { alpha: 0, beta: 0, gamma: 0 }, interval: 16 }));
+  }, 16);
 }
 
-/** A poster 0.8 m ahead, squarely facing the camera, in ARCore's frame: +Y out of the image, +Z down. */
-const POSTER_POSE = [1, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 0, -0.8, 1];
-const setResults = (page, list) =>
-  page.evaluate(([entries, pose]) => {
-    const fake = window.__fakeXR;
-    fake.results = entries.map(({ index, trackingState, width = 0.5 }) => ({ index, trackingState, measuredWidthInMeters: width, imageSpace: fake.space(pose) }));
-  }, [list, POSTER_POSE]);
-
-const open = async (url, fakeOptions) => {
-  const page = await (await browser.newContext(phone)).newPage();
+const open = async (url, { sim = {}, context: contextOptions = phone } = {}) => {
+  const context = await browser.newContext(contextOptions);
+  const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
-  if (fakeOptions) await page.addInitScript(installFakeXR, fakeOptions);
+  await page.addInitScript(installSimulatedPhone, { ...CAMERA, ...sim });
   await page.goto(`${base}${url}`);
   return { page, errors };
 };
@@ -135,170 +105,235 @@ const shot = async (page, name) => {
   await page.waitForTimeout(450); // Let the screen's fade-in finish.
   await page.screenshot({ path: join(out, `ui-${name}.png`) });
 };
-const sessionOpen = (page) => page.evaluate(() => window.__fakeXR.session !== null);
-const anchor = (page) => page.evaluate(() => Array.from(window.__AR__.runtime().scene.anchor.matrix.elements));
-const near = (a, b) => Math.abs(a - b) < 1e-4;
+const show = (page, id, options) => page.evaluate(([i, o]) => window.__showPoster(i, o), [id, options]);
+const experience = (page) => page.evaluate(() => window.__AR__.state().experience?.id);
+const phaseOf = (page) => page.evaluate(() => window.__AR__.state().phase);
+const cameraOn = (page) => page.evaluate(() => window.__sim.stream?.getVideoTracks().some((track) => track.readyState === 'live') ?? false);
+
+/**
+ * Where the anchor's poster-width box lands on the screen, in CSS pixels. The camera image fills the
+ * screen, cropped to fit, so this can be compared directly with where the poster was drawn.
+ */
+const projected = (page) =>
+  page.evaluate(() => {
+    const { scene } = window.__AR__.runtime();
+    const { anchor, camera } = scene;
+    const toScreen = (x, y) => {
+      const p = anchor.position.clone().set(x, y, 0).applyMatrix4(anchor.matrix).project(camera);
+      return [((p.x + 1) / 2) * innerWidth, ((1 - p.y) / 2) * innerHeight];
+    };
+    const [lx, ly] = toScreen(-0.5, 0);
+    const [rx, ry] = toScreen(0.5, 0);
+    return { width: Math.hypot(rx - lx, ry - ly), x: (lx + rx) / 2, y: (ly + ry) / 2, tilt: Math.atan2(ry - ly, rx - lx) };
+  });
+/** Where the simulated camera drew the poster, as the screen shows it. */
+const expected = (scale, x = 0, y = 0) => {
+  const fill = Math.max(phone.viewport.width / CAMERA.width, phone.viewport.height / CAMERA.height);
+  return { width: CAMERA.width * scale * fill, x: phone.viewport.width / 2 + x * fill, y: phone.viewport.height / 2 + y * fill };
+};
+const checkAligned = async (page, name, scale, x = 0, y = 0) => {
+  await page.waitForTimeout(400);
+  const got = await projected(page);
+  const want = expected(scale, x, y);
+  const widthOff = Math.abs(got.width - want.width) / want.width;
+  const offset = Math.hypot(got.x - want.x, got.y - want.y);
+  check(`${name}: content lines up with the print`, widthOff < 0.03 && offset < 6 && Math.abs(got.tilt) < 0.03, `width off ${(widthOff * 100).toFixed(1)}%, centre off ${offset.toFixed(1)} px, tilt ${got.tilt.toFixed(3)}`);
+};
 
 // ---- Poster tracking, deep link ----
 {
-  const { page, errors } = await open('?t=ceat-tyre&debug&w=0.42', {});
+  const { page, errors } = await open('?t=ceat-tyre&debug');
   check('welcome: deep link shows brand copy', await page.getByRole('heading', { name: 'Grip that goes the extra mile' }).isVisible());
-  await page.getByRole('button', { name: 'Start AR' }).waitFor({ timeout: 10000 });
+  await page.getByRole('button', { name: 'Start AR' }).waitFor({ timeout: 30000 });
+  check('welcome: the engine licence is credited and linked', (await page.locator('.legal a').getAttribute('href')).endsWith('LICENSE.txt'));
   await shot(page, 'welcome-deeplink');
+  check('the camera stays off until the tap', (await page.evaluate(() => window.__sim.cameraCalls)) === 0);
   await start(page);
-  await waitPhase(page, 'scanning');
-
-  const request = await page.evaluate(() => {
-    const r = window.__fakeXR.requests[0];
-    return { required: r.requiredFeatures, optional: r.optionalFeatures, images: r.trackedImages.length, width: r.trackedImages[0].widthInMeters, bitmapWidth: r.trackedImages[0].image.width, activated: r.activated };
-  });
-  check('nothing the flag controls is required', !(request.required ?? []).includes('image-tracking'));
-  check('session is requested inside the tap', request.activated);
-  check('deep link registers one poster at the given print width', request.images === 1 && request.width === 0.42 && request.bitmapWidth === 1024, JSON.stringify(request));
-  check('no MediaStream camera is opened', (await page.evaluate(() => document.querySelectorAll('video').length)) === 0 || (await page.evaluate(() => [...document.querySelectorAll('video')].every((v) => !v.srcObject))));
+  await waitPhase(page, 'scanning', 30000);
+  check('camera is on while scanning', await cameraOn(page));
   check('scan hint shows while searching', await page.locator('.scan__hint').isVisible());
   await shot(page, 'scanning');
 
-  await setResults(page, [{ index: 0, trackingState: 'tracked' }]);
-  await waitPhase(page, 'active', 3000);
-  check('content appears on the first ARCore pose', true);
-  await page.waitForTimeout(300);
-  const m = await anchor(page);
-  // ARCore's +Y out, +Z down has to become the content frame's +Z out, +Y up, sized by measured width.
-  const faces = near(m[0], 0.5) && near(m[5], 0.5) && near(m[10], 0.5) && near(m[9], 0) && near(m[6], 0) && near(m[14], -0.8);
-  check('image pose converts to the content frame at measured width', faces, m.map((v) => +v.toFixed(3)).join(','));
+  const t0 = Date.now();
+  await show(page, 'ceat-tyre');
+  await waitPhase(page, 'active', 10000);
+  check('the engine recognises the poster', true, `${Date.now() - t0} ms`);
+  await checkAligned(page, 'ceat-tyre', 0.7);
 
   await page.waitForTimeout(1800); // The intro finishes, and hotspots show.
   await shot(page, 'active');
-  const png = await page.screenshot({ clip: { x: 206, y: 300, width: 200, height: 300 } });
+  const png = await page.screenshot({ clip: { x: 106, y: 300, width: 200, height: 300 } });
   const { channels } = await sharp(png).stats();
   check('tyre is drawn where the poster is', channels[0].stdev + channels[1].stdev > 10, `stdev ${channels[0].stdev.toFixed(0)}`);
+  const feed = await sharp(await page.screenshot({ clip: { x: 0, y: 200, width: 412, height: 100 } })).stats();
+  check('the camera image is drawn behind the content', feed.channels[0].stdev > 5, `detail stdev ${feed.channels[0].stdev.toFixed(0)}`);
 
-  // Look away: ARCore goes on reporting the poster's remembered place. Nothing should change.
-  await setResults(page, [{ index: 0, trackingState: 'emulated' }]);
-  await page.waitForTimeout(900);
-  check('stays locked while the poster is out of view', (await page.evaluate(() => window.__AR__.state().phase)) === 'active');
-  await setResults(page, [{ index: 0, trackingState: 'tracked' }]);
-  await page.waitForTimeout(150);
-  check('no lost or recovered flash on looking back', (await page.evaluate(() => window.__AR__.state().phase)) === 'active');
-
-  // Tap a hotspot through the XR select event, which is how taps arrive during a session.
-  const picked = await page.evaluate(() => {
-    const runtime = window.__AR__.runtime();
-    const marker = [];
-    runtime.scene.scene.traverse((node) => {
-      if (node.isSprite && node.renderOrder === 40) marker.push(node);
+  // Tap the marker on screen, the same way a finger would.
+  const point = await page.evaluate(() => {
+    const { scene } = window.__AR__.runtime();
+    const markers = [];
+    scene.scene.traverse((node) => {
+      if (node.isSprite && node.renderOrder === 40) markers.push(node);
     });
-    const world = marker[0].getWorldPosition(marker[0].position.clone());
-    const dir = world.clone().normalize();
-    // A camera-origin ray through the marker: rotate -Z onto dir, with the fake using a pose lookup.
-    const fake = window.__fakeXR;
-    const event = new Event('select');
-    const q = { x: dir.y, y: -dir.x, z: 0, w: 1 - dir.z };
-    const norm = Math.hypot(q.x, q.y, q.z, q.w);
-    event.frame = { getPose: () => ({ transform: { position: { x: 0, y: 0, z: 0 }, orientation: { x: q.x / norm, y: q.y / norm, z: q.z / norm, w: q.w / norm } } }) };
-    event.inputSource = { targetRaySpace: fake.space() };
-    fake.session.dispatchEvent(event);
-    return window.__AR__.state().hotspot?.title ?? null;
+    const p = markers[0].getWorldPosition(markers[0].position.clone()).project(scene.camera);
+    return [((p.x + 1) / 2) * innerWidth, ((1 - p.y) / 2) * innerHeight];
   });
+  await page.mouse.click(point[0], point[1]);
+  await page.waitForTimeout(150);
+  const picked = await page.evaluate(() => window.__AR__.state().hotspot?.title ?? null);
   check('tapping a hotspot selects it', !!picked, `selected=${picked}`);
-  await page.waitForTimeout(100);
   check('hotspot card appears', await page.locator('.hotspot').isVisible());
   await shot(page, 'hotspot');
 
-  // ARCore stops reporting it entirely: lost, then recovered at once when it returns.
-  await setResults(page, [{ index: 0, trackingState: 'untracked' }]);
+  // Look away: world tracking is holding its place, so nothing should change.
+  await show(page, null);
+  await page.waitForTimeout(1200);
+  check('stays locked while the poster is out of view', (await phaseOf(page)) === 'active');
+  check('debug stats report the held poster', (await page.evaluate(() => window.__AR__.stats().imageState)) === 'held');
+  await shot(page, 'held');
+
+  // Force what happens if the engine loses track of the room as well. A static simulation can't make it.
+  await page.evaluate(() => {
+    window.__AR__.runtime().tracking.adapter.status = 'LIMITED';
+    const { onFrame } = window.__AR__.runtime().tracking.adapter;
+    window.__AR__.runtime().tracking.adapter.onFrame = function (reality) {
+      onFrame.call(this, { ...reality, trackingStatus: 'LIMITED' });
+    };
+  });
   await waitPhase(page, 'lost', 3000);
   await shot(page, 'lost');
-  check('losing the poster shows the lost state', await page.locator('.scan__hint').isVisible());
-  await setResults(page, [{ index: 0, trackingState: 'tracked' }]);
-  await waitPhase(page, 'recovered', 1000);
+  check('losing the room shows the lost state', await page.locator('.scan__hint').isVisible());
+  await show(page, 'ceat-tyre');
+  await waitPhase(page, 'recovered', 5000);
+  check('the poster coming back is recovered immediately', true);
   await shot(page, 'recovered');
-  check('coming back is recognised immediately', true);
   await waitPhase(page, 'active', 5000);
 
   await page.evaluate(() => document.querySelector('canvas.ar-canvas').getContext('webgl2').getExtension('WEBGL_lose_context').loseContext());
   await waitPhase(page, 'error', 5000);
   check('WebGL context loss reaches the error screen', (await alertTitle(page)).includes('Graphics'));
-  check('session and camera are off after a failure', !(await sessionOpen(page)));
+  check('camera is off after a failure', !(await cameraOn(page)));
+  await show(page, null); // Otherwise it can lock so fast that scanning never shows.
   await page.getByRole('button', { name: 'Try again' }).click();
-  await waitPhase(page, 'scanning');
-  check('retry starts a new session', await sessionOpen(page));
-
+  await waitPhase(page, 'scanning', 30000);
+  check('retry starts the camera again', await cameraOn(page));
   await page.getByRole('button', { name: 'Close' }).click();
   await waitPhase(page, 'welcome', 3000);
-  const after = await page.evaluate(() => ({ open: window.__fakeXR.session !== null, canvases: document.querySelectorAll('canvas.ar-canvas').length, runtime: window.__AR__.runtime() !== null }));
-  check('closing ends the session and removes the renderer', !after.open && after.canvases === 0 && !after.runtime, JSON.stringify(after));
-
+  const after = await page.evaluate(() => ({ canvases: document.querySelectorAll('canvas.ar-canvas').length, runtime: window.__AR__.runtime() !== null }));
+  check('closing removes the renderer', after.canvases === 0 && !after.runtime, JSON.stringify(after));
+  check('closing turns the camera off', !(await cameraOn(page)));
   await start(page);
-  await waitPhase(page, 'scanning');
-  await page.evaluate(() => window.__fakeXR.session.end());
-  await waitPhase(page, 'welcome', 3000);
-  check('leaving AR with the system back gesture returns to welcome', (await page.locator('canvas.ar-canvas').count()) === 0);
+  await waitPhase(page, 'scanning', 30000);
+  await show(page, 'ceat-tyre');
+  await waitPhase(page, 'active', 10000);
+  check('a session started after closing tracks again', true);
   check('no uncaught page errors', errors.length === 0, errors.join(' | '));
   await page.context().close();
 }
 
-// ---- All five posters ----
+// ---- All five posters, each with the engine's own recognition ----
 {
-  const { page, errors } = await open('?debug', {});
+  const { page, errors } = await open('?debug');
   await shot(page, 'welcome');
-  await page.getByRole('button', { name: 'Start AR' }).waitFor({ timeout: 15000 });
+  await page.getByRole('button', { name: 'Start AR' }).waitFor({ timeout: 30000 });
+  await shot(page, 'welcome-ready');
   await start(page);
-  await waitPhase(page, 'scanning');
-  check('registers all five posters', (await page.evaluate(() => window.__fakeXR.requests[0].trackedImages.length)) === 5);
+  await waitPhase(page, 'scanning', 30000);
 
-  await setResults(page, [{ index: 2, trackingState: 'tracked' }]);
-  await page.waitForFunction(() => window.__AR__.state().experience?.id === 'flower', null, { timeout: 3000 });
-  check('ARCore index picks the right poster', true);
-  await waitPhase(page, 'active', 15000);
+  for (const id of ['flower', 'basketball', 'jelly', 'love', 'ceat-tyre']) {
+    const t0 = Date.now();
+    await show(page, id);
+    await page.waitForFunction((i) => window.__AR__.state().experience?.id === i, id, { timeout: 15000 });
+    await waitPhase(page, 'active', 20000);
+    check(`${id}: recognised and shown`, true, `${Date.now() - t0} ms`);
+    await checkAligned(page, id, 0.7);
+    await page.waitForTimeout(600);
+    await shot(page, `poster-${id}`);
+    await show(page, null);
+    await page.waitForTimeout(500);
+  }
 
-  await setResults(page, [{ index: 2, trackingState: 'emulated' }, { index: 0, trackingState: 'emulated' }]);
-  await page.waitForTimeout(400);
-  check('a remembered poster does not steal the view', (await page.evaluate(() => window.__AR__.state().experience?.id)) === 'flower');
+  // A poster off to one side and further away, so errors in the projection or the lens show up.
+  await show(page, 'jelly', { scale: 0.45, x: 90, y: -160 });
+  await page.waitForFunction(() => window.__AR__.state().experience?.id === 'jelly', null, { timeout: 15000 });
+  await waitPhase(page, 'active', 20000);
+  await checkAligned(page, 'off-centre poster', 0.45, 90, -160);
 
-  await setResults(page, [{ index: 2, trackingState: 'emulated' }, { index: 3, trackingState: 'tracked' }]);
-  await page.waitForFunction(() => window.__AR__.state().experience?.id === 'jelly', null, { timeout: 3000 });
-  check('a poster in view takes over from a remembered one', true);
+  const before = await experience(page);
+  await page.waitForTimeout(500);
+  check('the shown poster does not flip with nothing new in view', (await experience(page)) === before);
+  const fps = await page.evaluate(() => window.__AR__.stats().trackFps);
+  check('the engine is producing frames', fps > 5, `${fps.toFixed(0)} fps on this machine's GPU`);
   check('no uncaught page errors (five posters)', errors.length === 0, errors.join(' | '));
   await page.context().close();
 }
 
 // ---- Room placement ----
 {
-  const { page, errors } = await open('?t=ceat-tyre&debug', {});
+  const { page, errors } = await open('?t=ceat-tyre&debug');
   await page.getByRole('button', { name: /Place the tyre/ }).click();
-  await waitPhase(page, 'scanning');
-  check('room placement asks for hit testing', await page.evaluate(() => window.__fakeXR.requests[0].requiredFeatures.includes('hit-test')));
+  await waitPhase(page, 'scanning', 30000);
+  await shot(page, 'placement-searching');
+
+  // A level camera never meets the floor, so point it down.
   await page.evaluate(() => {
-    window.__fakeXR.hits = [[1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, -1, -1.5, 1]];
+    const { adapter } = window.__AR__.runtime().tracking;
+    const { onFrame } = adapter;
+    adapter.onFrame = function (reality) {
+      onFrame.call(this, { ...reality, rotation: { x: -Math.SQRT1_2 / 1.3, y: 0, z: 0, w: Math.sqrt(1 - 1 / (2 * 1.69)) } });
+    };
   });
-  await page.waitForFunction(() => window.__AR__.state().placement === 'ready', null, { timeout: 3000 });
-  await page.evaluate(() => {
-    const fake = window.__fakeXR;
-    const event = new Event('select');
-    event.frame = fake.lastFrame;
-    event.inputSource = { targetRaySpace: fake.space() };
-    fake.session.dispatchEvent(event);
-  });
-  await waitPhase(page, 'active', 3000);
+  await page.waitForFunction(() => window.__AR__.state().placement === 'ready', null, { timeout: 5000 });
+  await shot(page, 'placement-ready');
+  await page.mouse.click(206, 500);
+  await waitPhase(page, 'active', 5000);
   check('tapping places the tyre', (await page.evaluate(() => window.__AR__.state().placement)) === 'placed');
+  await page.waitForTimeout(2000);
+  await shot(page, 'placement-placed');
+  const floor = await page.evaluate(() => window.__AR__.runtime().scene.anchor.matrix.elements[13]);
+  check('placed content sits near the floor', Math.abs(floor) < 1, `content y ${floor.toFixed(2)}`);
   check('no uncaught page errors (placement)', errors.length === 0, errors.join(' | '));
   await page.context().close();
 }
 
-// ---- Session request failures ----
-for (const [reject, title, name] of [
-  ['NotSupportedError', 'Couldn’t start ARCore', 'ARCore missing is reported, with no mention of flags'],
-  ['NotAllowedError', 'Camera access is off', 'denied permission gives instructions'],
-  ['OperationError', 'Couldn’t start ARCore', 'other session failures are reported'],
+// ---- Permission and camera failures ----
+for (const [camera, title, name] of [
+  ['NotAllowedError', 'Camera access is off', 'denied camera gives instructions'],
+  ['NotReadableError', 'Couldn’t start the camera', 'a camera in use is reported'],
 ]) {
-  const { page } = await open('?t=ceat-tyre&debug', { reject });
-  await page.getByRole('button', { name: 'Start AR' }).waitFor({ timeout: 10000 });
+  const { page } = await open('?t=ceat-tyre&debug', { sim: { camera } });
+  await page.getByRole('button', { name: 'Start AR' }).waitFor({ timeout: 30000 });
+  await start(page);
+  await waitPhase(page, 'error', 15000);
+  const got = await alertTitle(page);
+  check(name, got.includes(title), got);
+  await shot(page, `error-${camera}`);
+  await page.context().close();
+}
+
+// ---- iPhone: the engine accepts it, and motion is asked for inside the tap ----
+{
+  const { page, errors } = await open('?t=ceat-tyre&debug', { sim: { motion: 'granted' }, context: { ...phone, userAgent: IPHONE } });
+  await page.getByRole('button', { name: 'Start AR' }).waitFor({ timeout: 30000 });
+  check('iPhone is accepted, not turned away', (await phaseOf(page)) === 'welcome');
+  await start(page);
+  await waitPhase(page, 'scanning', 30000);
+  const asked = await page.evaluate(() => ({ prompts: window.__sim.motionPrompts, inTap: window.__sim.promptInTap }));
+  check('iPhone motion prompt is raised inside the tap', asked.prompts > 0 && asked.inTap, JSON.stringify(asked));
+  await show(page, 'ceat-tyre');
+  await waitPhase(page, 'active', 15000);
+  check('iPhone user agent: poster tracks', true);
+  check('no uncaught page errors (iPhone)', errors.length === 0, errors.join(' | '));
+  await page.context().close();
+}
+{
+  const { page } = await open('?t=ceat-tyre&debug', { sim: { motion: 'denied' }, context: { ...phone, userAgent: IPHONE } });
+  await page.getByRole('button', { name: 'Start AR' }).waitFor({ timeout: 30000 });
   await start(page);
   await waitPhase(page, 'error', 5000);
-  check(name, (await alertTitle(page)).includes(title));
-  await shot(page, `error-${reject}`);
+  check('denied motion on iPhone gives instructions', (await alertTitle(page)).includes('Motion'));
+  check('the camera stays off when motion is denied', (await page.evaluate(() => window.__sim.cameraCalls)) === 0);
+  await shot(page, 'error-motion');
   await page.context().close();
 }
 
@@ -306,175 +341,39 @@ for (const [reject, title, name] of [
 {
   const context = await browser.newContext(phone);
   const page = await context.newPage();
-  await page.addInitScript(installFakeXR, {});
+  await page.addInitScript(installSimulatedPhone, CAMERA);
   await page.route('**/*.glb', (route) => route.fulfill({ status: 404, body: 'gone' }));
   await page.goto(`${base}?t=ceat-tyre&debug`);
-  await page.getByRole('button', { name: 'Start AR' }).waitFor({ timeout: 10000 });
+  await page.getByRole('button', { name: 'Start AR' }).waitFor({ timeout: 30000 });
   await start(page);
-  await waitPhase(page, 'error', 10000);
+  await waitPhase(page, 'error', 30000);
   check('missing model is reported', (await alertTitle(page)).includes('Content'));
-  check('session ends after a content failure', !(await sessionOpen(page)));
+  check('camera is off after a content failure', !(await cameraOn(page)));
   await context.close();
 }
 {
   const context = await browser.newContext(phone);
   const page = await context.newPage();
-  await page.addInitScript(installFakeXR, {});
-  await page.route('**/target.jpg', (route) => route.fulfill({ status: 404, body: 'gone' }));
+  await page.addInitScript(installSimulatedPhone, CAMERA);
+  await page.route('**/targets/*.json', (route) => route.fulfill({ status: 404, body: 'gone' }));
   await page.goto(`${base}?t=ceat-tyre&debug`);
-  await waitPhase(page, 'error', 10000);
-  check('missing poster image is reported', (await alertTitle(page)).includes('Content'));
-  await page.unroute('**/target.jpg');
+  await waitPhase(page, 'error', 30000);
+  check('missing poster data is reported', (await alertTitle(page)).includes('Content'));
+  await page.unroute('**/targets/*.json');
   await page.getByRole('button', { name: 'Try again' }).click();
-  await page.getByRole('button', { name: 'Start AR' }).waitFor({ timeout: 10000 });
-  check('retry reloads the poster images', true);
+  await page.getByRole('button', { name: 'Start AR' }).waitFor({ timeout: 30000 });
+  check('retry reloads the poster data', true);
   await context.close();
 }
 
-// ---- No flag: the real recogniser in its worker, on a drawn camera image with a known camera path ----
-for (const flipped of [false, true]) {
-  const context = await browser.newContext(phone);
-  const page = await context.newPage();
-  const errors = [];
-  page.on('pageerror', (e) => errors.push(e.message));
-  page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
-  await page.addInitScript(installFakeXR, { grant: ['camera-access', 'dom-overlay'] });
-  await page.addInitScript(([targets, upsideDown]) => {
-    // A poster on a wall, 0.8 m in front of the path's start, and 0.4 m wide. The app assumes 0.6 m.
-    const W = 540;
-    const H = 1200;
-    const f = (H / 2) / Math.tan((60 * Math.PI) / 360);
-    const images = targets.map((url) => {
-      const image = new Image();
-      image.src = url;
-      return image;
-    });
-    const canvas = document.createElement('canvas');
-    canvas.width = W;
-    canvas.height = H;
-    const ctx = canvas.getContext('2d');
-    const sim = { poster: 0, camera: [0, 0, 0], visible: true, width: 0.4, distance: 0.8, frames: 0 };
-    window.__sim = sim;
-    const textures = new WeakMap();
-    window.XRWebGLBindingFake = class {
-      constructor(_s, gl) { this.gl = gl; }
-      getCameraImage() {
-        const { gl } = this;
-        const image = images[sim.poster];
-        ctx.fillStyle = '#6b6f76';
-        ctx.fillRect(0, 0, W, H);
-        if (sim.visible && image.complete && image.naturalWidth) {
-          const d = sim.distance - sim.camera[2] * -1;
-          const px = (sim.width * f) / d;
-          const py = (px * image.naturalHeight) / image.naturalWidth;
-          const cx = W / 2 - (sim.camera[0] * f) / d;
-          const cy = H / 2 + (sim.camera[1] * f) / d;
-          ctx.drawImage(image, cx - px / 2, cy - py / 2, px, py);
-        }
-        let texture = textures.get(gl);
-        if (!texture) {
-          texture = gl.createTexture();
-          textures.set(gl, texture);
-        }
-        const previous = gl.getParameter(gl.TEXTURE_BINDING_2D);
-        gl.bindTexture(gl.TEXTURE_2D, texture);
-        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, upsideDown);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
-        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        gl.bindTexture(gl.TEXTURE_2D, previous);
-        sim.frames += 1;
-        return texture;
-      }
-    };
-    Object.defineProperty(window, 'XRWebGLBinding', { value: window.XRWebGLBindingFake, configurable: true });
-  }, [['assets/experiences/ceat-tyre/target.jpg', 'assets/experiences/basketball/target.jpg', 'assets/experiences/flower/target.jpg', 'assets/experiences/jelly/target.jpg', 'assets/experiences/love/target.jpg'].map((p) => base + p), flipped]);
-  await page.addInitScript(() => {
-    // The stand-in's camera view: a camera the simulation moves, matching the drawn image's lens.
-    const original = navigator.xr.requestSession;
-    navigator.xr.requestSession = async (mode, init) => {
-      const session = await original(mode, init);
-      const raf = session.requestAnimationFrame.bind(session);
-      session.requestAnimationFrame = (callback) =>
-        raf((t, frame) => {
-          const getViewerPose = frame.getViewerPose;
-          frame.getViewerPose = (space) => {
-            const pose = getViewerPose(space);
-            const [x, y, z] = window.__sim.camera;
-            const m = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1];
-            const transform = { matrix: new Float32Array(m), position: { x, y, z, w: 1 }, orientation: { x: 0, y: 0, z: 0, w: 1 } };
-            const p = new Float32Array(pose.views[0].projectionMatrix);
-            p[0] = p[5] * (1200 / 540);
-            return { transform, views: [{ eye: 'none', projectionMatrix: p, transform, camera: { width: 540, height: 1200 } }] };
-          };
-          callback(t, frame);
-        });
-      return session;
-    };
-  });
-  await page.goto(`${base}?debug`);
-  await page.getByRole('button', { name: 'Start AR' }).waitFor({ timeout: 15000 });
-  await start(page);
-  await waitPhase(page, 'scanning', 20000);
-  const label = flipped ? 'upside-down texture' : 'upright texture';
-
-  const started = Date.now();
-  await waitPhase(page, 'active', 40000);
-  const firstLock = Date.now() - started;
-  const found = await page.evaluate(() => window.__AR__.state().experience?.id);
-  check(`${label}: recognises the poster without the flag`, found === 'ceat-tyre', `${firstLock} ms including shader compile, found=${found}`);
-
-  // A short sideways and vertical sweep: this is what lets the true width be measured.
-  const path = [[0.08, 0, 0], [0.16, 0.05, 0], [0.08, 0.1, 0.05], [-0.06, 0.05, 0.1], [-0.14, -0.05, 0.05], [0, -0.1, 0], [0.12, 0, 0.08], [0, 0, 0]];
-  for (const camera of path) {
-    await page.evaluate((c) => { window.__sim.camera = c; }, camera);
-    await page.waitForTimeout(900);
-  }
-  const m = await anchor(page);
-  const stats = await page.evaluate(() => window.__AR__.stats());
-  const err = Math.hypot(m[12], m[13], m[14] + 0.8);
-  check(`${label}: poster position in the world is right`, err < 0.03, `off by ${(err * 100).toFixed(1)} cm, recognition ${stats.recogniseMs.toFixed(0)} ms`);
-  check(`${label}: true width measured from camera movement`, Math.abs(m[0] - 0.4) < 0.04, `${(m[0] * 100).toFixed(1)} cm, truly 40 cm, assumed 60 cm`);
-
-  if (!flipped) {
-    // Look away, then back: content must stay put, with no search.
-    await page.evaluate(() => { window.__sim.visible = false; });
-    await page.waitForTimeout(1500);
-    check('stays locked with the poster out of view', (await page.evaluate(() => window.__AR__.state().phase)) === 'active');
-    await page.evaluate(() => { window.__sim.visible = true; });
-
-    const t0 = Date.now();
-    await page.evaluate(() => { window.__sim.poster = 1; });
-    await page.waitForFunction(() => window.__AR__.state().experience?.id === 'basketball', null, { timeout: 15000 });
-    await waitPhase(page, 'active', 15000);
-    check('a different poster takes over', true, `${Date.now() - t0} ms`);
-    const t1 = Date.now();
-    await page.evaluate(() => { window.__sim.poster = 0; });
-    await page.waitForFunction(() => window.__AR__.state().experience?.id === 'ceat-tyre', null, { timeout: 15000 });
-    await waitPhase(page, 'active', 15000);
-    check('going back to a seen poster is quick', true, `${Date.now() - t1} ms`);
-    await shot(page, 'recogniser-active');
-  }
-  check(`${label}: no page errors`, errors.length === 0, errors.join(' | '));
-  await context.close();
-}
-
-// ---- Devices without ARCore: these use the browser's real answers, not the stand-in ----
+// ---- Devices that can't run it: these use the engine's and browser's real answers ----
 {
-  const { page } = await open('?debug');
-  await waitPhase(page, 'unsupported', 5000);
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const page = await context.newPage();
+  await page.goto(`${base}?debug`);
+  await waitPhase(page, 'unsupported', 30000);
   await shot(page, 'unsupported');
-  check('desktop is told it needs an ARCore phone', (await page.locator('[role=alert] p').innerText()).includes('ARCore'));
-  await page.context().close();
-}
-{
-  const context = await browser.newContext({ ...phone, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1' });
-  const page = await context.newPage();
-  await page.addInitScript(() => Object.defineProperty(navigator, 'xr', { value: undefined }));
-  await page.goto(`${base}?debug`);
-  await waitPhase(page, 'unsupported', 5000);
-  check('iPhone is told plainly that ARCore is unavailable', (await page.locator('[role=alert] p').innerText()).includes('iPhone'));
-  await shot(page, 'unsupported-iphone');
+  check('desktop is told to use a phone', (await page.locator('[role=alert] p').innerText()).includes('phone'));
   await context.close();
 }
 {

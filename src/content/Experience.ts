@@ -3,7 +3,7 @@ import type { HotspotConfig } from '../config/experiences';
 
 export type SurfaceKind = 'floor' | 'wall';
 
-/** How a piece of content sits on a real surface when placed with WebXR hit testing. */
+/** How a piece of content sits on a real surface when placed in the room. */
 export interface PlacementSpec {
   /** Content units to metres. */
   scale: number;

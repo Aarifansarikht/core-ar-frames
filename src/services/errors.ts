@@ -1,7 +1,23 @@
 import type { ARErrorInfo, ARErrorKind } from '../types/ar';
 
-/** The session started, but Chrome didn't grant the camera image that finding posters needs. */
-export class CameraAccessError extends Error {}
+/** The engine couldn't start, for a reason the user may be able to fix. */
+export class EngineError extends Error {
+  constructor(
+    readonly kind: ARErrorKind,
+    readonly detail: unknown,
+  ) {
+    super(`AR engine: ${kind}`);
+  }
+}
+
+/** Sorts what the engine reports, such as `{type: 'permission', permission: 'deviceorientation'}`. */
+export function errorKindFor(detail: unknown): ARErrorKind {
+  const { type, permission, reason } = (detail ?? {}) as { type?: string; permission?: string; reason?: string };
+  if (type === 'permission') return permission === 'deviceorientation' || permission === 'devicemotion' ? 'motion-denied' : 'camera-denied';
+  if (reason === 'DENY_CAMERA') return 'camera-denied';
+  if (detail instanceof DOMException && (detail.name === 'NotAllowedError' || detail.name === 'SecurityError')) return 'camera-denied';
+  return 'camera-failed';
+}
 
 export function describeError(kind: ARErrorKind): ARErrorInfo {
   switch (kind) {
@@ -9,28 +25,28 @@ export function describeError(kind: ARErrorKind): ARErrorInfo {
       return {
         kind,
         title: 'Camera access is off',
-        message: 'Tap the icon next to the address bar, open Permissions, allow Camera and AR, then try again.',
+        message: 'Allow the camera for this site in your browser’s settings, then try again.',
         canRetry: true,
       };
-    case 'xr-camera':
+    case 'motion-denied':
       return {
         kind,
-        title: 'Camera access is needed',
-        message: 'Finding posters needs the camera. Choose Allow when Chrome asks, and update Chrome if it doesn’t ask.',
+        title: 'Motion access is off',
+        message: 'AR needs motion access to hold content in place. Close this tab, open the link again, and choose Allow.',
+        canRetry: true,
+      };
+    case 'camera-failed':
+      return {
+        kind,
+        title: 'Couldn’t start the camera',
+        message: 'Close other apps using the camera, then try again.',
         canRetry: true,
       };
     case 'tracking-init':
       return {
         kind,
-        title: 'Couldn’t start poster recognition',
-        message: 'The device may be short on memory, or the connection dropped. Close some tabs and try again.',
-        canRetry: true,
-      };
-    case 'xr-session':
-      return {
-        kind,
-        title: 'Couldn’t start ARCore',
-        message: 'Check that Google Play Services for AR is up to date, close other apps using the camera, then try again.',
+        title: 'AR stopped unexpectedly',
+        message: 'The device may be short on memory. Close some tabs and try again.',
         canRetry: true,
       };
     case 'asset-load':
