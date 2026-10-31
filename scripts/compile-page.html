@@ -1,0 +1,41 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>target compiler</title>
+<script type="module">
+  import '/src/vendor/tfjs-lite.ts';
+  import * as tf from '@tensorflow/tfjs-core';
+  import { Compiler } from 'mind-ar/src/image-target/compiler.js';
+
+  const load = (url) =>
+    new Promise((res, rej) => {
+      const img = new Image();
+      img.onload = () => res(img);
+      img.onerror = () => rej(new Error('failed to load ' + url));
+      img.src = url;
+    });
+
+  window.gpuName = () => {
+    const gl = document.createElement('canvas').getContext('webgl2');
+    const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+    return dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : 'unknown';
+  };
+
+  window.compileTargets = async (urls) => {
+    await tf.setBackend('webgl');
+    await tf.ready();
+    const images = await Promise.all(urls.map(load));
+    const compiler = new Compiler();
+    let last = -10;
+    await compiler.compileImageTargets(images, (p) => {
+      if (p - last >= 10) {
+        last = p;
+        console.log(`progress ${p.toFixed(0)}%`);
+      }
+    });
+    const bytes = new Uint8Array(compiler.exportData());
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return btoa(bin);
+  };
+  window.compileReady = true;
+</script>
