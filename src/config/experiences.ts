@@ -28,7 +28,7 @@ export interface ExperienceConfig {
   hotspots?: HotspotConfig[];
 }
 
-// Order matters: it is the target order inside all.mind (see scripts/compile-targets.mjs).
+// Order matters: ARCore reports a found poster by its index in the list given to the session.
 export const EXPERIENCES: ExperienceConfig[] = [
   {
     id: 'ceat-tyre',
@@ -111,30 +111,22 @@ export const EXPERIENCES: ExperienceConfig[] = [
 
 export const experienceById = (id: string | null | undefined) => EXPERIENCES.find((e) => e.id === id) ?? null;
 
-export const targetsUrl = (id: string | null) => asset(`targets/${id ?? 'all'}.mind`);
+/** Used when `?w=` doesn't give the print's real width. ARCore locks and scales best with the true value. */
+const DEFAULT_PRINT_WIDTH_METERS = 0.6;
 
-/** `?fov=` lets a device be calibrated in the field; `?debug` shows live tracking stats. */
+/** `?w=` gives the printed width in metres; `?debug` shows live tracking stats. */
 export interface RuntimeOptions {
   deepLink: ExperienceConfig | null;
   debug: boolean;
-  fovLong: number | null;
-  /** Overrides the tier-based tracker input size, for field testing. */
-  inputShortSide: number | null;
-  /** Disables the pose filter, for measuring raw tracker output. */
-  rawPose: boolean;
-  /** Asks ARCore for native image tracking in immersive sessions. Needs chrome://flags/#webxr-incubations. */
-  xrImageTracking: boolean;
+  printWidthMeters: number;
 }
 
 export function readRuntimeOptions(search = window.location.search): RuntimeOptions {
   const params = new URLSearchParams(search);
-  const fov = Number(params.get('fov'));
+  const width = Number(params.get('w'));
   return {
     deepLink: experienceById(params.get('t')),
     debug: params.has('debug'),
-    fovLong: Number.isFinite(fov) && fov > 20 && fov < 120 ? fov : null,
-    inputShortSide: Number(params.get('input')) || null,
-    rawPose: params.has('rawpose'),
-    xrImageTracking: params.has('xrimage'),
+    printWidthMeters: width > 0 && width < 20 ? width : DEFAULT_PRINT_WIDTH_METERS,
   };
 }

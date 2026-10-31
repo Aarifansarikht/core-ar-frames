@@ -1,7 +1,7 @@
-export type UnsupportedReason = 'insecure' | 'no-camera-api' | 'no-webgl';
+export type UnsupportedReason = 'insecure' | 'no-webgl' | 'no-arcore';
 
 export interface Capabilities {
-  /** Null when the device can run the camera-based experience. */
+  /** Null when the device can run ARCore through WebXR, as far as can be told before a session starts. */
   unsupported: UnsupportedReason | null;
   isIOS: boolean;
   isInAppBrowser: boolean;
@@ -21,12 +21,12 @@ const hasWebGL2 = () => {
 export function detectCapabilities(): Capabilities {
   const ua = navigator.userAgent;
   const isIOS = /iPad|iPhone|iPod/.test(ua) || (ua.includes('Mac') && navigator.maxTouchPoints > 1);
-  // Facebook, Instagram, etc. webviews often block getUserMedia entirely.
+  // Facebook, Instagram, etc. webviews don't offer WebXR.
   const isInAppBrowser = /FBAN|FBAV|Instagram|Line\/|MicroMessenger|; wv\)/.test(ua);
 
   let unsupported: UnsupportedReason | null = null;
   if (!window.isSecureContext) unsupported = 'insecure';
-  else if (!navigator.mediaDevices?.getUserMedia) unsupported = 'no-camera-api';
+  else if (!navigator.xr) unsupported = 'no-arcore';
   else if (!hasWebGL2()) unsupported = 'no-webgl';
 
   return { unsupported, isIOS, isInAppBrowser };

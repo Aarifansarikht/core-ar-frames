@@ -1,42 +1,27 @@
 import type { ARErrorInfo, ARErrorKind } from '../types/ar';
 
-export function describeError(kind: ARErrorKind, isIOS: boolean): ARErrorInfo {
+export function describeError(kind: ARErrorKind): ARErrorInfo {
   switch (kind) {
     case 'camera-denied':
       return {
         kind,
         title: 'Camera access is off',
-        message: isIOS
-          ? 'In Safari, tap aA in the address bar, open Website Settings, set Camera to Allow, then try again.'
-          : 'Tap the icon next to the address bar, open Permissions, allow Camera, then try again.',
+        message: 'Tap the icon next to the address bar, open Permissions, allow Camera and AR, then try again.',
         canRetry: true,
       };
-    case 'camera-unavailable':
+    case 'xr-image-tracking':
       return {
         kind,
-        title: 'No camera found',
-        message: 'This experience needs a camera. Try opening this page on your phone.',
+        title: 'Turn on image tracking in Chrome',
+        message:
+          'Open chrome://flags/#webxr-incubations, set WebXR Incubations to Enabled and relaunch Chrome. Also check that Google Play Services for AR is up to date, then open this page again.',
         canRetry: true,
       };
-    case 'camera-busy':
+    case 'xr-session':
       return {
         kind,
-        title: 'Camera is busy',
-        message: 'Another app is using the camera. Close it, then try again.',
-        canRetry: true,
-      };
-    case 'insecure-context':
-      return {
-        kind,
-        title: 'Secure connection needed',
-        message: 'Browsers only allow camera access over HTTPS. Open this page using an https:// address.',
-        canRetry: false,
-      };
-    case 'tracking-init':
-      return {
-        kind,
-        title: 'Couldn’t start tracking',
-        message: 'The tracker failed to start, usually because the device is short on memory. Close some tabs and try again.',
+        title: 'Couldn’t start ARCore',
+        message: 'Check that Google Play Services for AR is up to date, close other apps using the camera, then try again.',
         canRetry: true,
       };
     case 'asset-load':
@@ -58,13 +43,6 @@ export function describeError(kind: ARErrorKind, isIOS: boolean): ARErrorInfo {
         kind,
         title: 'Graphics were reset',
         message: 'The device reclaimed graphics memory. Tap retry to restart the experience.',
-        canRetry: true,
-      };
-    case 'xr-session':
-      return {
-        kind,
-        title: 'Couldn’t start room AR',
-        message: 'Google Play Services for AR may need updating. You can still scan posters using the regular camera view.',
         canRetry: true,
       };
     case 'unknown':

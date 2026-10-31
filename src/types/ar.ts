@@ -15,14 +15,11 @@ export type ARPhase =
 
 export type ARErrorKind =
   | 'camera-denied'
-  | 'camera-unavailable'
-  | 'camera-busy'
-  | 'insecure-context'
-  | 'tracking-init'
+  | 'xr-image-tracking'
+  | 'xr-session'
   | 'asset-load'
   | 'webgl-init'
   | 'webgl-lost'
-  | 'xr-session'
   | 'unknown';
 
 export interface ARErrorInfo {
@@ -33,30 +30,30 @@ export interface ARErrorInfo {
   canRetry: boolean;
 }
 
-export type TrackingKind = 'image' | 'webxr';
+export type TrackingKind = 'webxr';
 
 /** One tracker result. `matrix` is valid only for the synchronous duration of the call. */
 export interface PoseSample {
   targetIndex: number;
-  /** Content root to camera space (image tracking) or reference space (WebXR). */
+  /** Content root to the WebXR reference space. */
   matrix: Matrix4;
-  /** 0..1, the share of target features confirmed in this frame. */
+  /** 1 when ARCore sees the poster now, 0.5 when it holds the poster's last known place in the room. */
   confidence: number;
-  /** Capture time of the camera frame, in seconds. */
+  /** Time of the XR frame, in seconds. */
   time: number;
 }
 
 export interface TrackingStats {
   engine: string;
-  /** Tracker throughput in frames per second. */
+  /** XR frames per second. */
   trackFps: number;
-  /** Time spent processing the last frame, in milliseconds. */
-  trackMs: number;
   confidence: number;
-  inputWidth: number;
-  inputHeight: number;
-  /** Long-side camera field of view assumed for the pose solve, in degrees. */
-  fovLong: number;
+  /** ARCore's state for the current poster: tracked, emulated or none. */
+  imageState: string;
+  /** ARCore's verdict on each poster's detail, in list order. */
+  imageScores: string[];
+  /** The poster width ARCore measured, in metres. */
+  measuredWidth: number;
 }
 
 /** What a tracking adapter reports to TrackingManager. Adapters never touch UI or content. */
@@ -65,11 +62,4 @@ export interface TrackingSink {
   miss(): void;
   /** The session ended for a reason outside our control (e.g. the user left immersive mode). */
   ended(reason?: string): void;
-}
-
-/** Tracker-pixel pinhole intrinsics. The principal point is assumed to be the image centre. */
-export interface CameraIntrinsics {
-  focal: number;
-  width: number;
-  height: number;
 }

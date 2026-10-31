@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Cross-platform WebAR poster experiences (WebXR/ARCore on Android, MindAR image tracking everywhere else) on a shared Three.js renderer.",
+  "description": "WebAR poster experiences tracked by ARCore through WebXR image tracking, on a Three.js renderer.",
   "engines": {
     "node": ">=20.19"
   },
@@ -14,20 +14,12 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "assets": "node scripts/prepare-assets.mjs",
-    "targets": "node scripts/compile-targets.mjs",
-    "footage": "node scripts/make-test-footage.mjs",
-    "test:tracking": "node scripts/test-tracking.mjs",
-    "test:matrix": "node scripts/test-matrix.mjs",
     "test:registration": "node scripts/check-registration.mjs",
-    "test:webkit": "node scripts/test-webkit.mjs",
     "test:ui": "node scripts/test-ui.mjs",
     "test:device": "node scripts/test-device.mjs"
   },
   "dependencies": {
     "@fontsource-variable/inter": "5.3.0",
-    "@tensorflow/tfjs-backend-webgl": "4.22.0",
-    "@tensorflow/tfjs-core": "4.22.0",
-    "mind-ar": "1.2.5",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "three": "0.187.0"

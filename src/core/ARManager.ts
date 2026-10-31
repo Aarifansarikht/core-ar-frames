@@ -5,7 +5,6 @@ import { ContentVideo } from '../services/ContentVideo';
 import { describeError } from '../services/errors';
 import type { ARErrorInfo, ARErrorKind, ARPhase, PoseSample, TrackingStats } from '../types/ar';
 import type { ARRuntime } from './ARRuntime';
-import { CameraError } from './CameraManager';
 
 export interface ARState {
   phase: ARPhase;
@@ -17,9 +16,10 @@ export interface ARState {
   progressLabel: string;
   error: ARErrorInfo | null;
   hotspot: HotspotConfig | null;
-  canFlip: boolean;
   canPlaceInRoom: boolean;
-  /** The browser blocked muted video autoplay (iOS Low Power Mode); a tap is needed. */
+  /** The poster images are decoded, so a tap can start a session. */
+  ready: boolean;
+  /** The browser blocked muted video autoplay; a tap is needed. */
   videoBlocked: boolean;
 }
 
@@ -33,8 +33,8 @@ const initialState = (options: RuntimeOptions, capabilities: Capabilities): ARSt
   progressLabel: '',
   error: null,
   hotspot: null,
-  canFlip: false,
   canPlaceInRoom: false,
+  ready: false,
   videoBlocked: false,
 });
 
@@ -45,7 +45,7 @@ const initialState = (options: RuntimeOptions, capabilities: Capabilities): ARSt
  */
 export class ARManager {
   readonly options = readRuntimeOptions();
-  readonly capabilities = detectCapabilities();
+  capabilities = detectCapabilities();
   private state = initialState(this.options, this.capabilities);
   private readonly listeners = new Set<() => void>();
 
@@ -61,12 +61,17 @@ export class ARManager {
     this.video.onBlocked = () => this.set({ videoBlocked: true });
     if (!this.capabilities.unsupported) {
       void supportsImmersiveAR().then((supported) => {
+        if (!supported) {
+          this.capabilities = { ...this.capabilities, unsupported: 'no-arcore' };
+          this.set({ phase: 'unsupported' });
+          return;
+        }
         const placeable = (this.options.deepLink ?? EXPERIENCES.find((e) => e.placeable))?.placeable ?? false;
-        this.set({ canPlaceInRoom: supported && placeable });
+        this.set({ canPlaceInRoom: placeable });
+        void this.prepareTrackedImages();
       });
     }
     window.addEventListener('pagehide', this.onPageHide);
-    if (this.options.xrImageTracking) void this.prepareTrackedImages();
     if (this.options.debug) this.installDebugHook();
   }
 
@@ -86,118 +91,134 @@ export class ARManager {
     void import('./ARRuntime');
   }
 
-  /** Starts the camera-based experience. Must run from a user gesture. */
+  /** Starts ARCore poster tracking. Must run from a user gesture. */
   start = async () => {
-    this.video.unlock(); // Has to stay synchronous with the tap.
-    const session = this.beginSession();
+    const trackedImages = this.trackedImages;
+    if (!trackedImages) return;
+    // requestSession must be the first thing that happens in the tap, before anything is awaited.
+    const requested = navigator.xr!.requestSession('immersive-ar', {
+      requiredFeatures: ['image-tracking'],
+      optionalFeatures: ['dom-overlay', 'light-estimation'],
+      domOverlay: { root: document.getElementById('ar-overlay') ?? document.body },
+      trackedImages,
+    } as XRSessionInit);
+
+    this.video.unlock();
+    const id = this.beginSession();
     this.set({ phase: 'permission', error: null, progress: 0, progressLabel: 'Starting', hotspot: null, placement: null, videoBlocked: false });
 
-    try {
-      const runtime = await this.createRuntime();
-      if (session !== this.sessionId) return runtime.dispose();
-      this.runtime = runtime;
-
-      await runtime.startCamera();
-      if (session !== this.sessionId) return;
-      this.set({ phase: 'initializing', canFlip: await runtime.camera.canFlip() });
-      if (session !== this.sessionId) return;
-
-      await runtime.startImageTracking();
-      if (session !== this.sessionId) return;
-      this.set({ phase: 'scanning' });
-    } catch (err) {
-      if (session === this.sessionId) this.fail(classify(err), err);
-    }
+    await this.runSession(
+      requested,
+      (error) => (error === 'NotSupportedError' ? 'xr-image-tracking' : 'xr-session'),
+      id,
+      (runtime, session) => runtime.startPosterTracking(session),
+    );
   };
 
   /** Starts room placement with WebXR hit testing. Must run from a user gesture. */
   placeInRoom = async () => {
     const config = this.options.deepLink ?? EXPERIENCES.find((e) => e.placeable);
     if (!config?.placeable) return;
-    const overlay = document.getElementById('ar-overlay') ?? document.body;
 
     // requestSession must be the first thing that happens in the tap, before anything is awaited.
-    const imageTracking = this.trackedImages ? { trackedImages: this.trackedImages } : {};
     const requested = navigator.xr!.requestSession('immersive-ar', {
       requiredFeatures: ['hit-test'],
-      optionalFeatures: ['anchors', 'dom-overlay', 'light-estimation', ...(this.trackedImages ? ['image-tracking'] : [])],
-      domOverlay: { root: overlay },
-      ...imageTracking,
-    } as XRSessionInit);
+      optionalFeatures: ['anchors', 'dom-overlay', 'light-estimation'],
+      domOverlay: { root: document.getElementById('ar-overlay') ?? document.body },
+    });
 
     this.video.unlock();
     const id = this.beginSession();
     this.set({
-      phase: 'initializing',
+      phase: 'permission',
       experience: config,
       error: null,
       progress: 0,
       progressLabel: 'Starting AR',
       hotspot: null,
       placement: 'searching',
-      canFlip: false,
     });
 
-    try {
-      const session = await requested;
-      const runtime = await this.createRuntime();
-      if (id !== this.sessionId) {
-        runtime.dispose();
-        void session.end();
-        return;
-      }
-      this.runtime = runtime;
-      await runtime.startPlacement(session, config);
-      if (id !== this.sessionId) return;
-      this.set({ phase: 'scanning' });
-    } catch (err) {
-      if (id === this.sessionId) this.fail('xr-session', err);
-    }
+    await this.runSession(requested, () => 'xr-session', id, (runtime, session) => runtime.startPlacement(session, config));
   };
 
   /** Ends the experience. The camera is off by the time this returns. */
   stop = () => {
     this.beginSession();
-    this.set({ ...initialState(this.options, this.capabilities), canPlaceInRoom: this.state.canPlaceInRoom });
+    this.set({ ...initialState(this.options, this.capabilities), canPlaceInRoom: this.state.canPlaceInRoom, ready: !!this.trackedImages });
   };
 
   retry = () => {
-    void this.start();
-  };
-
-  flipCamera = async () => {
-    const runtime = this.runtime;
-    if (!runtime) return;
-    try {
-      await runtime.flipCamera();
-    } catch (err) {
-      this.fail(classify(err), err);
+    if (this.trackedImages) {
+      void this.start();
+    } else {
+      this.stop();
+      void this.prepareTrackedImages();
     }
   };
 
-  tap = (clientX: number, clientY: number) => {
-    if (this.state.videoBlocked) {
-      this.set({ videoBlocked: false });
-      this.video.retry();
+  /** Waits for the requested session, then hands it to a new runtime. */
+  private async runSession(
+    requested: Promise<XRSession>,
+    rejection: (errorName: string) => ARErrorKind,
+    id: number,
+    begin: (runtime: ARRuntime, session: XRSession) => Promise<void>,
+  ) {
+    let session: XRSession;
+    try {
+      session = await requested;
+    } catch (err) {
+      if (id !== this.sessionId) return;
+      const name = err instanceof DOMException ? err.name : '';
+      this.fail(name === 'NotAllowedError' || name === 'SecurityError' ? 'camera-denied' : rejection(name), err);
       return;
     }
-    this.runtime?.tap(clientX, clientY);
-  };
+    if (id !== this.sessionId) {
+      void session.end();
+      return;
+    }
+    // Leaving AR with the system back gesture can happen at any point, including while content loads.
+    session.addEventListener('end', () => {
+      if (id === this.sessionId) this.stop();
+    });
+
+    this.set({ phase: 'initializing' });
+    try {
+      const runtime = await this.createRuntime();
+      if (id !== this.sessionId) {
+        runtime.dispose();
+        void session.end().catch(() => undefined);
+        return;
+      }
+      this.runtime = runtime;
+      await begin(runtime, session);
+      if (id === this.sessionId && this.state.phase === 'initializing') this.set({ phase: 'scanning' });
+    } catch (err) {
+      void session.end().catch(() => undefined);
+      if (id === this.sessionId) this.fail('xr-session', err);
+    }
+  }
 
   /**
    * Decodes the posters ahead of time, because the session request can't wait on anything. ARCore
-   * reports each poster's measured width, so the starting width only needs to be roughly right.
-   * Indices must match target indices, so this mirrors what targetsUrl() would load.
+   * reports each poster's measured width, so the printed width only needs to be roughly right.
+   * ARCore reports posters by their index in this list.
    */
   private async prepareTrackedImages() {
     const list = this.options.deepLink ? [this.options.deepLink] : EXPERIENCES;
-    const images = await Promise.all(
-      list.map(async (experience) => {
-        const blob = await (await fetch(experience.target)).blob();
-        return { image: await createImageBitmap(blob, { resizeWidth: 1024 }), widthInMeters: 0.6 };
-      }),
-    );
-    this.trackedImages = images;
+    try {
+      this.trackedImages = await Promise.all(
+        list.map(async (experience) => {
+          const response = await fetch(experience.target);
+          if (!response.ok) throw new Error(`${experience.target}: HTTP ${response.status}`);
+          const image = await createImageBitmap(await response.blob(), { resizeWidth: 1024 });
+          return { image, widthInMeters: this.options.printWidthMeters };
+        }),
+      );
+      this.set({ ready: true });
+    } catch (err) {
+      if (this.state.phase === 'welcome') this.fail('asset-load', err);
+    }
   }
 
   /** Disposes any previous runtime and invalidates its in-flight async work. */
@@ -233,6 +254,12 @@ export class ARManager {
       hotspot: (hotspot) => this.set({ hotspot }),
       placementState: (placement) => this.set({ placement }),
       xrEnded: () => this.stop(),
+      resumeBlockedVideo: () => {
+        if (!this.state.videoBlocked) return false;
+        this.set({ videoBlocked: false });
+        this.video.retry();
+        return true;
+      },
       fatal: (kind, detail) => this.fail(kind, detail),
       pose: this.options.debug ? this.logPose : undefined,
     });
@@ -241,7 +268,7 @@ export class ARManager {
   private fail(kind: ARErrorKind, detail: unknown) {
     console.error(`[AR] ${kind}:`, detail);
     this.beginSession();
-    this.set({ phase: 'error', error: describeError(kind, this.capabilities.isIOS), placement: null });
+    this.set({ phase: 'error', error: describeError(kind), placement: null });
   }
 
   private set(patch: Partial<ARState>) {
@@ -271,14 +298,8 @@ export class ARManager {
         clearPoses: () => {
           this.poseLog = [];
         },
-        cameraActive: () => this.runtime?.camera.active ?? false,
         runtime: () => this.runtime,
       },
     });
   }
-}
-
-function classify(err: unknown): ARErrorKind {
-  if (err instanceof CameraError) return err.kind;
-  return 'tracking-init';
 }

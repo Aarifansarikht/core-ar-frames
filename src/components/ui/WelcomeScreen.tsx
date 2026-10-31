@@ -29,8 +29,8 @@ export function WelcomeScreen({ state, manager }: { state: ARState; manager: ARM
             : 'Point your camera at any of these posters and watch them move.'}
         </p>
 
-        <button className="button button--primary" onClick={manager.start}>
-          Start AR
+        <button className="button button--primary" onClick={manager.start} disabled={!state.ready}>
+          {state.ready ? 'Start AR' : 'Preparing…'}
         </button>
         {state.canPlaceInRoom && (
           <button className="button button--ghost" onClick={manager.placeInRoom}>

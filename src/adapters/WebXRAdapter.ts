@@ -25,9 +25,15 @@ interface XRFrameWithImages extends XRFrame {
   getImageTrackingResults?(): ImageTrackingResult[];
 }
 
+interface XRSessionWithImages extends XRSession {
+  getTrackedImageScores?(): Promise<string[]>;
+}
+
 export interface WebXROptions {
   session: XRSession;
   scene: SceneManager;
+  /** `poster` locks onto printed posters with ARCore image tracking. `room` places content by tapping. */
+  mode: 'poster' | 'room';
   /** Null until content is ready to be placed. Read on each tap. */
   getPlaceable(): Experience | null;
   onPlacementState(state: PlacementState): void;
@@ -37,9 +43,30 @@ export interface WebXROptions {
 const WALL_NORMAL_MAX = 0.35;
 
 /**
- * ARCore through WebXR immersive-ar: hit testing to find real surfaces, anchors to hold what was
- * placed. If the browser also grants image-tracking (Chrome keeps it behind chrome://flags, and this
- * app only asks with ?xrimage), printed posters are locked by ARCore itself and no tap is needed.
+ * Picks the poster to show from ARCore's results. A poster in view beats one that is only remembered,
+ * and the current poster keeps its place until another is actually in view, so content can't flip
+ * between posters that ARCore is merely remembering.
+ */
+export function chooseImage<T extends { index: number; trackingState: string }>(results: readonly T[], current: number) {
+  const usable = results.filter((r) => r.trackingState !== 'untracked');
+  const inView = usable.filter((r) => r.trackingState === 'tracked');
+  return (
+    inView.find((r) => r.index === current) ??
+    inView[0] ??
+    usable.find((r) => r.index === current) ??
+    usable[0] ??
+    null
+  );
+}
+
+/**
+ * ARCore through WebXR immersive-ar. In `poster` mode ARCore's image tracking locks printed posters,
+ * which Chrome keeps behind chrome://flags/#webxr-incubations. In `room` mode, hit testing finds real
+ * surfaces and anchors hold what was placed.
+ *
+ * ARCore keeps a found poster's place in the room while it is out of view, reported as `emulated`.
+ * Those poses are used as they are: content stays fixed in the room when the camera turns away, and is
+ * already in place when the poster comes back. Poses aren't smoothed, as that would only add lag.
  *
  * Every immersive session is requested by the caller, since it must happen inside a user gesture.
  */
@@ -64,9 +91,13 @@ export class WebXRAdapter implements TrackingAdapter {
   private readonly pose = new Matrix4();
   private readonly surfacePose = new Matrix4();
   private fps = 0;
+  private currentImage = -1;
+  private imageState = 'none';
+  private measuredWidth = 0;
+  private imageScores: string[] = [];
 
   constructor(private readonly options: WebXROptions) {
-    this.imageTracking = options.session.enabledFeatures?.includes('image-tracking') ?? false;
+    this.imageTracking = options.mode === 'poster';
     this.reticle = new Mesh(
       new RingGeometry(0.09, 0.115, 48).rotateX(-Math.PI / 2),
       new MeshBasicMaterial({ color: 0xffffff, side: DoubleSide, transparent: true, opacity: 0.9, toneMapped: false }),
@@ -87,6 +118,13 @@ export class WebXRAdapter implements TrackingAdapter {
 
     if (this.imageTracking) {
       this.setState('poster-lock');
+      void (session as XRSessionWithImages)
+        .getTrackedImageScores?.()
+        .then((scores) => {
+          this.imageScores = scores;
+          if (scores.includes('untrackable')) console.warn('[AR] ARCore rejected a poster as untrackable:', scores);
+        })
+        .catch(() => undefined);
     } else {
       if (!session.requestHitTestSource) throw new Error('This device does not support AR hit testing.');
       this.hitSource = (await session.requestHitTestSource({ space: this.viewerSpace })) ?? null;
@@ -122,11 +160,10 @@ export class WebXRAdapter implements TrackingAdapter {
     return {
       engine: this.imageTracking ? 'WebXR image tracking (ARCore)' : 'WebXR hit test + anchors (ARCore)',
       trackFps: this.fps,
-      trackMs: 0,
-      confidence: this.state === 'placed' || this.state === 'poster-lock' ? 1 : 0,
-      inputWidth: 0,
-      inputHeight: 0,
-      fovLong: 0,
+      confidence: this.imageState === 'tracked' || this.state === 'placed' ? 1 : this.imageState === 'emulated' ? 0.5 : 0,
+      imageState: this.imageState,
+      imageScores: this.imageScores,
+      measuredWidth: this.measuredWidth,
     };
   }
 
@@ -141,19 +178,26 @@ export class WebXRAdapter implements TrackingAdapter {
   }
 
   private reportImageTracking(frame: XRFrameWithImages) {
-    const results = frame.getImageTrackingResults?.() ?? [];
-    const tracked = results.find((r) => r.trackingState === 'tracked');
-    const pose = tracked && frame.getPose(tracked.imageSpace, this.localSpace!);
-    if (!tracked || !pose) {
+    const image = chooseImage(frame.getImageTrackingResults?.() ?? [], this.currentImage);
+    const pose = image && frame.getPose(image.imageSpace, this.localSpace!);
+    if (!image || !pose) {
+      this.imageState = 'none';
       this.sink?.miss();
       return;
     }
+    this.currentImage = image.index;
+    this.imageState = image.trackingState;
+    this.measuredWidth = image.measuredWidthInMeters;
     // ARCore's image frame has +Y out of the image and +Z towards its bottom edge. The content frame
     // has +Z out and +Y towards the top edge, a -90 degree turn about X.
     this.pose.fromArray(pose.transform.matrix);
-    const width = tracked.measuredWidthInMeters;
-    this.pose.multiply(IMAGE_TO_CONTENT).scale(scaleVector.setScalar(width));
-    this.sink?.pose({ targetIndex: tracked.index, matrix: this.pose, confidence: 1, time: performance.now() / 1000 });
+    this.pose.multiply(IMAGE_TO_CONTENT).scale(scaleVector.setScalar(image.measuredWidthInMeters));
+    this.sink?.pose({
+      targetIndex: image.index,
+      matrix: this.pose,
+      confidence: image.trackingState === 'tracked' ? 1 : 0.5,
+      time: performance.now() / 1000,
+    });
   }
 
   private updateReticle(frame: XRFrame) {

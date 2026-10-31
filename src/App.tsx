@@ -27,12 +27,7 @@ export function App({ manager }: { manager: ARManager }) {
 
   return (
     <>
-      <div
-        ref={stage}
-        className="ar-stage"
-        data-live={inExperience}
-        onPointerUp={(e) => manager.tap(e.clientX, e.clientY)}
-      />
+      <div ref={stage} className="ar-stage" data-live={inExperience} />
       {/* The WebXR DOM overlay root: it stays visible during immersive sessions. */}
       <div id="ar-overlay" className="overlay">
         {phase === 'welcome' && <WelcomeScreen state={state} manager={manager} />}

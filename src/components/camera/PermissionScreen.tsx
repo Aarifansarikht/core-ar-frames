@@ -9,7 +9,7 @@ export function PermissionScreen() {
           <CameraIcon />
         </span>
         <h2>Allow camera access</h2>
-        <p>Choose Allow when your browser asks. The camera is only used to find the poster: nothing is recorded or uploaded.</p>
+        <p>Choose Allow when Chrome asks. The camera is only used to find the poster: nothing is recorded or uploaded.</p>
         <div className="dots" aria-label="Waiting for permission">
           <i />
           <i />

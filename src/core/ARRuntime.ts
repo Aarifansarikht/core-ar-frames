@@ -1,13 +1,11 @@
-import { Quaternion, Raycaster, Vector2 } from 'three';
-import { ImageTrackingAdapter } from '../adapters/ImageTrackingAdapter';
+import { Quaternion, Raycaster } from 'three';
 import { WebXRAdapter, type PlacementState } from '../adapters/WebXRAdapter';
-import { EXPERIENCES, targetsUrl, type ExperienceConfig, type HotspotConfig, type RuntimeOptions } from '../config/experiences';
+import { EXPERIENCES, type ExperienceConfig, type HotspotConfig, type RuntimeOptions } from '../config/experiences';
 import type { Experience } from '../content/Experience';
 import { TyreExperience } from '../content/TyreExperience';
 import { VideoExperience } from '../content/VideoExperience';
 import type { ContentVideo } from '../services/ContentVideo';
 import type { ARErrorKind, PoseSample, TrackingStats } from '../types/ar';
-import { CameraManager } from './CameraManager';
 import { LightingManager } from './LightingManager';
 import { ModelManager } from './ModelManager';
 import { detectTier, qualityFor } from './PerformanceManager';
@@ -23,24 +21,25 @@ export interface RuntimeEvents {
   hotspot(hotspot: HotspotConfig | null): void;
   placementState(state: PlacementState): void;
   xrEnded(): void;
+  /** A tap arrived while muted video was blocked. Returns true if it was used to restart the video. */
+  resumeBlockedVideo(): boolean;
   /** Something failed that needs the user: the app moves to its error screen. */
   fatal(kind: ARErrorKind, detail: unknown): void;
   /** Debug hook: called for each pose when `?debug` is on. */
   pose?(sample: PoseSample, runtime: ARRuntime): void;
 }
 
-const tapPoint = new Vector2();
 const rayRotation = new Quaternion();
 
 /**
  * Everything that needs Three.js and a tracker, split out of ARManager so the welcome screen stays
- * small. One runtime exists per running session and is thrown away afterwards, which is how every
- * GPU resource, worker and stream gets released on a single code path.
+ * small. One runtime exists per running session and is thrown away afterwards, which is how the XR
+ * session, and with it the camera, and every GPU resource get released on a single code path.
  */
 export class ARRuntime {
-  readonly camera = new CameraManager();
   scene: SceneManager | null = null;
 
+  private session: XRSession | null = null;
   private lighting: LightingManager | null = null;
   private models: ModelManager | null = null;
   private readonly tracking: TrackingManager;
@@ -67,45 +66,34 @@ export class ARRuntime {
     });
   }
 
-  /** Requests the camera. Stays on the permission screen until the browser has an answer. */
-  startCamera() {
-    return this.camera.start('environment');
-  }
-
-  /** Builds the renderer and tracker behind the preloader. The camera must already be running. */
-  async startImageTracking() {
+  /**
+   * Locks posters with ARCore's image tracking. `session` must have been requested synchronously inside
+   * the tap that asked for it, and with the same poster list that ARCore's indices refer to.
+   */
+  async startPosterTracking(session: XRSession) {
+    this.session = session;
     this.createScene();
-    const { options, events } = this;
-    const quality = qualityFor(detectTier());
-    const deepLink = options.deepLink;
-
-    // Tracker start-up is most of the wait, content the rest. Deep links know their content up front.
-    const trackerShare = deepLink ? 0.7 : 1;
-    const adapter = new ImageTrackingAdapter({
-      camera: this.camera,
-      background: this.scene!.background,
-      targetsUrl: targetsUrl(deepLink?.id ?? null),
-      inputShortSide: options.inputShortSide ?? quality.trackerShortSide,
-      rawPose: options.rawPose,
-      fovLong: options.fovLong,
-      onIntrinsics: (k) => this.scene?.setCameraIntrinsics(k),
-      onProgress: (f) => events.progress(f * trackerShare, 'Preparing tracker'),
-    });
-    await this.tracking.start(adapter);
-    if (deepLink) {
-      await this.prepareExperience(deepLink, (f) => events.progress(trackerShare + f * (1 - trackerShare), 'Loading content'));
-    }
-    events.progress(1, 'Ready');
+    const deepLink = this.options.deepLink;
+    // Content comes first, so it is ready to show on the very first pose.
+    if (deepLink) await this.prepareExperience(deepLink, (f) => this.events.progress(f, 'Loading content'));
+    this.lighting!.enableXREstimation();
+    await this.tracking.start(
+      new WebXRAdapter({
+        session,
+        scene: this.scene!,
+        mode: 'poster',
+        getPlaceable: () => this.experience,
+        onPlacementState: () => undefined,
+      }),
+    );
+    session.addEventListener('select', this.onXRSelect);
+    this.events.progress(1, 'Ready');
   }
 
   /** `session` must have been requested synchronously inside the tap that asked for it. */
   async startPlacement(session: XRSession, config: ExperienceConfig) {
-    // ARCore needs exclusive use of the camera: nothing else may still be holding the stream.
-    this.tracking.stop();
-    this.camera.stop();
-    if (!this.scene) this.createScene();
-    this.scene!.setCameraFeedVisible(false);
-
+    this.session = session;
+    this.createScene();
     await this.prepareExperience(config, (f) => this.events.progress(f, 'Loading content'));
     this.experience!.root.visible = false;
     this.lighting!.enableXREstimation();
@@ -114,6 +102,7 @@ export class ARRuntime {
       new WebXRAdapter({
         session,
         scene: this.scene!,
+        mode: 'room',
         getPlaceable: () => this.experience,
         onPlacementState: (state) => this.events.placementState(state),
       }),
@@ -129,26 +118,14 @@ export class ARRuntime {
     return this.scene?.performance.fps ?? 0;
   }
 
-  /** Handles a screen tap, in client coordinates, on the camera view. */
-  tap(clientX: number, clientY: number) {
-    if (!this.scene || !this.experience || !this.entered) return;
-    const { width, height } = this.scene.viewportSize;
-    tapPoint.set((clientX / width) * 2 - 1, -(clientY / height) * 2 + 1);
-    this.raycaster.setFromCamera(tapPoint, this.scene.camera);
-    this.events.hotspot(this.experience.select(this.raycaster));
-  }
-
-  async flipCamera() {
-    await this.camera.flip();
-  }
-
-  /** Releases the camera, the GPU and the tracker worker. Safe to call more than once. */
+  /** Ends the session, which turns the camera off, and releases the GPU. Safe to call more than once. */
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
     this.loadToken += 1;
     this.tracking.stop();
-    this.camera.dispose();
+    this.session?.removeEventListener('select', this.onXRSelect);
+    this.session?.end().catch(() => undefined); // Already ended is fine.
     this.unsubscribeFrame?.();
     this.experience?.dispose();
     this.experience = null;
@@ -161,7 +138,7 @@ export class ARRuntime {
   private createScene() {
     let scene: SceneManager;
     try {
-      scene = new SceneManager(this.container, this.camera.video, qualityFor(detectTier()));
+      scene = new SceneManager(this.container, qualityFor(detectTier()));
     } catch (err) {
       this.events.fatal('webgl-init', err);
       throw err;
@@ -236,6 +213,7 @@ export class ARRuntime {
   };
 
   private readonly onXRSelect = (event: XRInputSourceEvent) => {
+    if (this.events.resumeBlockedVideo()) return;
     const experience = this.experience;
     const refSpace = this.scene?.renderer.xr.getReferenceSpace();
     if (!experience || !refSpace || !this.entered) return;

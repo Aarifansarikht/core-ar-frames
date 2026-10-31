@@ -143,6 +143,10 @@ button {
   outline-offset: 2px;
 }
 
+.button:disabled {
+  opacity: 0.6;
+}
+
 .button--primary {
   color: #fff;
   background: linear-gradient(180deg, #3b82ff, #1f63ec);

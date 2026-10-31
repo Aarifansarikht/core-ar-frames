@@ -6,13 +6,6 @@ export const CloseIcon = () => (
   </svg>
 );
 
-export const FlipIcon = () => (
-  <svg {...base} aria-hidden="true">
-    <path d="M4 8.5A8 8 0 0 1 19 7l1 2M20 15.5A8 8 0 0 1 5 17l-1-2" />
-    <path d="M20 4v5h-5M4 20v-5h5" />
-  </svg>
-);
-
 export const CameraIcon = () => (
   <svg {...base} width={30} height={30} strokeWidth={1.5} aria-hidden="true">
     <path d="M3 8.5A1.5 1.5 0 0 1 4.5 7h2.3a1 1 0 0 0 .8-.4l1-1.2a1 1 0 0 1 .8-.4h4.8a1 1 0 0 1 .8.4l1 1.2a1 1 0 0 0 .8.4h2.7A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z" />

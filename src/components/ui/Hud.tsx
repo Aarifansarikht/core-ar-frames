@@ -1,6 +1,6 @@
 import type { ARManager, ARState } from '../../core/ARManager';
 import type { ARPhase } from '../../types/ar';
-import { CloseIcon, FlipIcon } from './icons';
+import { CloseIcon } from './icons';
 
 const STATUS: Partial<Record<ARPhase, { text: string; tone: string }>> = {
   scanning: { text: 'Searching', tone: 'search' },
@@ -16,10 +16,10 @@ const PLACEMENT_PROMPT = {
 } as const;
 
 export function Hud({ state, manager }: { state: ARState; manager: ARManager }) {
-  const { phase, placement, hotspot, experience, canFlip, videoBlocked } = state;
+  const { phase, placement, hotspot, experience, videoBlocked } = state;
   const isPlacing = placement === 'searching' || placement === 'ready';
   const status = STATUS[phase];
-  const showHint = !placement && (phase === 'scanning' || phase === 'lost');
+  const showHint = !isPlacing && placement !== 'placed' && (phase === 'scanning' || phase === 'lost');
 
   return (
     <div className="hud">
@@ -33,13 +33,7 @@ export function Hud({ state, manager }: { state: ARState; manager: ARManager }) 
             {status.text}
           </div>
         )}
-        {canFlip && !placement ? (
-          <button className="icon-button glass" onClick={manager.flipCamera} aria-label="Switch camera">
-            <FlipIcon />
-          </button>
-        ) : (
-          <span className="icon-button icon-button--spacer" />
-        )}
+        <span className="icon-button icon-button--spacer" />
       </header>
 
       {showHint && (

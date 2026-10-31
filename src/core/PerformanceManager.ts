@@ -2,8 +2,6 @@ export type DeviceTier = 'low' | 'mid' | 'high';
 
 export interface QualityProfile {
   tier: DeviceTier;
-  /** Tracker input short side. 368 is the smallest that gets MindAR's 256px detector crop in 16:9. */
-  trackerShortSide: number;
   maxPixelRatio: number;
   antialias: boolean;
 }
@@ -14,9 +12,7 @@ interface NavigatorWithMemory extends Navigator {
 
 export function detectTier(nav: NavigatorWithMemory = navigator): DeviceTier {
   const cores = nav.hardwareConcurrency ?? 4;
-  const memory = nav.deviceMemory; // Not exposed on iOS Safari.
-  const isIOS = /iPad|iPhone|iPod/.test(nav.userAgent) || (nav.userAgent.includes('Mac') && nav.maxTouchPoints > 1);
-  if (isIOS) return 'mid'; // Safari reveals no specs; even older supported iPhones handle this tier.
+  const memory = nav.deviceMemory;
   if ((memory !== undefined && memory < 3) || cores <= 4) return 'low';
   if (memory !== undefined && memory >= 8 && cores >= 8) return 'high';
   return 'mid';
@@ -25,18 +21,14 @@ export function detectTier(nav: NavigatorWithMemory = navigator): DeviceTier {
 export function qualityFor(tier: DeviceTier): QualityProfile {
   switch (tier) {
     case 'low':
-      return { tier, trackerShortSide: 368, maxPixelRatio: 1.5, antialias: false };
+      return { tier, maxPixelRatio: 1.5, antialias: false };
     case 'mid':
-      return { tier, trackerShortSide: 480, maxPixelRatio: 2, antialias: true };
     case 'high':
-      return { tier, trackerShortSide: 540, maxPixelRatio: 2, antialias: true };
+      return { tier, maxPixelRatio: 2, antialias: true };
   }
 }
 
-/**
- * Watches render frame time and trades resolution for smoothness. Only the pixel ratio moves: tracker
- * input stays fixed at runtime so that tracking quality never pays for decorative rendering.
- */
+/** Watches render frame time and trades resolution for smoothness outside immersive sessions. */
 export class PerformanceManager {
   fps = 60;
   pixelRatio: number;

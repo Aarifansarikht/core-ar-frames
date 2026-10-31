@@ -8,8 +8,6 @@ import {
   Timer,
   WebGLRenderer,
 } from 'three';
-import type { CameraIntrinsics } from '../types/ar';
-import { CameraBackground } from './CameraBackground';
 import { PerformanceManager, type QualityProfile } from './PerformanceManager';
 
 export interface SceneListener {
@@ -19,8 +17,9 @@ export interface SceneListener {
 export type FrameCallback = (dt: number, time: number, xrFrame: XRFrame | undefined) => void;
 
 /**
- * The renderer shared by every tracking engine. Holds the single animation loop in the app, and the
- * content anchor that trackers position through a pose matrix.
+ * The renderer. Holds the single animation loop in the app, and the content anchor that the tracker
+ * positions through a pose matrix. Chrome composites ARCore's camera image behind it, and three.js takes
+ * the camera's pose and projection from each XR frame.
  */
 export class SceneManager {
   readonly renderer: WebGLRenderer;
@@ -28,20 +27,17 @@ export class SceneManager {
   readonly camera = new PerspectiveCamera();
   /** Content frame: poster width 1, origin at the poster's centre, +Y up, +Z out of the poster. */
   readonly anchor = new Group();
-  readonly background: CameraBackground;
   readonly performance: PerformanceManager;
 
   private readonly timer = new Timer();
   private readonly frameCallbacks = new Set<FrameCallback>();
   private readonly resizeObserver: ResizeObserver;
-  private intrinsics: CameraIntrinsics | null = null;
   private listener: SceneListener = {};
   private contextLost = false;
   private disposed = false;
 
   constructor(
     private readonly container: HTMLElement,
-    video: HTMLVideoElement,
     quality: QualityProfile,
   ) {
     this.renderer = new WebGLRenderer({
@@ -72,10 +68,6 @@ export class SceneManager {
     this.anchor.visible = false;
     this.scene.add(this.anchor);
 
-    this.camera.matrixAutoUpdate = false;
-    this.background = new CameraBackground(this.renderer, video);
-    this.scene.add(this.background.mesh);
-
     this.resizeObserver = new ResizeObserver(() => this.syncSize());
     this.resizeObserver.observe(container);
     this.syncSize();
@@ -99,20 +91,6 @@ export class SceneManager {
     this.anchor.matrixWorldNeedsUpdate = true;
   }
 
-  setCameraIntrinsics(intrinsics: CameraIntrinsics) {
-    this.intrinsics = intrinsics;
-    this.updateProjection();
-  }
-
-  /** Immersive sessions bring their own camera image and projection. */
-  setCameraFeedVisible(visible: boolean) {
-    this.background.mesh.visible = visible;
-  }
-
-  get viewportSize() {
-    return { width: this.container.clientWidth, height: this.container.clientHeight };
-  }
-
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
@@ -120,7 +98,6 @@ export class SceneManager {
     this.resizeObserver.disconnect();
     this.timer.dispose();
     this.frameCallbacks.clear();
-    this.background.dispose();
     const canvas = this.renderer.domElement;
     canvas.removeEventListener('webglcontextlost', this.onContextLost);
     this.renderer.dispose();
@@ -133,35 +110,6 @@ export class SceneManager {
     const { clientWidth: w, clientHeight: h } = this.container;
     if (!w || !h) return;
     this.renderer.setSize(w, h, false);
-    this.updateProjection();
-  }
-
-  /**
-   * Builds the projection from tracker intrinsics, then scales it the way object-fit: cover scales
-   * the camera image, so poster pixels and rendered pixels stay aligned at any viewport shape.
-   */
-  private updateProjection() {
-    const k = this.intrinsics;
-    if (!k) return;
-    const { clientWidth: vw, clientHeight: vh } = this.container;
-    if (!vw || !vh) return;
-
-    const inputAspect = k.width / k.height;
-    const viewAspect = vw / vh;
-    const scaleX = viewAspect > inputAspect ? 1 : inputAspect / viewAspect;
-    const scaleY = viewAspect > inputAspect ? viewAspect / inputAspect : 1;
-    this.background.setUvScale(1 / scaleX, 1 / scaleY);
-
-    const near = 0.02;
-    const far = 60;
-    const e = this.camera.projectionMatrix.elements;
-    e.fill(0);
-    e[0] = ((2 * k.focal) / k.width) * scaleX;
-    e[5] = ((2 * k.focal) / k.height) * scaleY;
-    e[10] = -(far + near) / (far - near);
-    e[11] = -1;
-    e[14] = (-2 * far * near) / (far - near);
-    this.camera.projectionMatrixInverse.copy(this.camera.projectionMatrix).invert();
   }
 
   private readonly tick = (_time: number, xrFrame?: XRFrame) => {

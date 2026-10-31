@@ -7,7 +7,7 @@ import type { TrackingKind, TrackingSink, TrackingStats } from '../types/ar';
 export interface TrackingAdapter {
   readonly kind: TrackingKind;
   start(sink: TrackingSink): Promise<void>;
-  /** Stops processing and releases GPU and worker resources. Safe to call more than once. */
+  /** Stops processing and releases its resources. Safe to call more than once. */
   stop(): void;
   stats(): TrackingStats;
 }
