@@ -28,7 +28,7 @@ export interface ExperienceConfig {
   hotspots?: HotspotConfig[];
 }
 
-// Order matters: a found poster is reported by its index in the list of targets given to the engine.
+// Order matters: a found poster is reported by its index in the list of targets given to the tracker.
 export const EXPERIENCES: ExperienceConfig[] = [
   {
     id: 'ceat-tyre',
@@ -109,7 +109,10 @@ export const EXPERIENCES: ExperienceConfig[] = [
   },
 ];
 
-export const targetUrl = (id: string) => asset(`targets/${id}.json`);
+/** Absolute, because the worker that loads these lives at a different path to the page. */
+const absolute = (path: string) => new URL(path, document.baseURI).href;
+export const targetUrl = (id: string) => absolute(asset(`targets/${id}.target`));
+export const opencvUrl = () => absolute(`${base}external/opencv/opencv.js`);
 
 export const experienceById = (id: string | null | undefined) => EXPERIENCES.find((e) => e.id === id) ?? null;
 

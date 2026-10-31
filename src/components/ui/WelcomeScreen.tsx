@@ -2,8 +2,6 @@ import { EXPERIENCES } from '../../config/experiences';
 import type { ARManager, ARState } from '../../core/ARManager';
 import { RoomIcon } from './icons';
 
-const ENGINE_LICENCE = `${import.meta.env.BASE_URL}external/xr/LICENSE.txt`;
-
 export function WelcomeScreen({ state, manager }: { state: ARState; manager: ARManager }) {
   const deepLink = manager.options.deepLink;
   const logo = deepLink?.logo;
@@ -39,14 +37,6 @@ export function WelcomeScreen({ state, manager }: { state: ARState; manager: ARM
             <RoomIcon /> Place the tyre in your room
           </button>
         )}
-        {/* The engine's licence requires this credit. */}
-        <p className="legal">
-          Uses the XR Engine © 2026 Niantic Spatial, Inc., provided as is under its{' '}
-          <a href={ENGINE_LICENCE} target="_blank" rel="noreferrer">
-            licence
-          </a>
-          .
-        </p>
       </div>
     </section>
   );

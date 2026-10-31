@@ -29,7 +29,7 @@ const unsupportedMessage = ({ unsupported, isInAppBrowser }: Capabilities) => {
   if (unsupported === 'insecure') return 'AR needs a secure connection. Open this page using an https:// address.';
   if (isInAppBrowser) return 'This in-app browser can’t run AR. Open this link in Safari or Chrome instead.';
   if (unsupported === 'no-webgl') return 'This browser doesn’t support the 3D graphics this experience needs. Please update it.';
-  return 'Please open this link on a phone, in Safari on iPhone or Chrome on Android.';
+  return 'This browser is too old for AR. Please update it, or open this link in Safari on iPhone or Chrome on Android.';
 };
 
 export function UnsupportedScreen({ capabilities }: { capabilities: Capabilities }) {

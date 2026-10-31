@@ -4,18 +4,17 @@ import { defineConfig, type PluginOption } from 'vite';
 import react from '@vitejs/plugin-react';
 import basicSsl from '@vitejs/plugin-basic-ssl';
 
-/** index.html loads the engine as a plain script. Only these files are used: faces and sky aren't. */
-function copyEngine() {
-  const from = fileURLToPath(new URL('./node_modules/@8thwall/engine-binary/dist/', import.meta.url));
-  const to = fileURLToPath(new URL('./public/external/xr/', import.meta.url));
+/** The tracker's worker loads OpenCV as a plain script, which is too big to go through the bundler. */
+function copyOpenCv() {
+  const from = fileURLToPath(new URL('./node_modules/@techstark/opencv-js/', import.meta.url));
+  const to = fileURLToPath(new URL('./public/external/opencv/', import.meta.url));
   mkdirSync(to, { recursive: true });
-  copyFileSync(`${from}xr.js`, `${to}xr.js`);
-  copyFileSync(`${from}xr-slam.js`, `${to}xr-slam.js`);
+  copyFileSync(`${from}dist/opencv.js`, `${to}opencv.js`);
   copyFileSync(`${from}LICENSE`, `${to}LICENSE.txt`);
 }
 
 export default defineConfig(({ mode }) => {
-  copyEngine();
+  copyOpenCv();
   const plugins: PluginOption[] = [react()];
   // The camera needs a secure context. `npm run dev:https` gives phones on the LAN one.
   if (mode === 'https') plugins.push(basicSsl());
@@ -23,6 +22,7 @@ export default defineConfig(({ mode }) => {
   return {
     base: './',
     plugins,
+    worker: { format: 'iife' },
     build: {
       target: 'es2021',
       chunkSizeWarningLimit: 1500,

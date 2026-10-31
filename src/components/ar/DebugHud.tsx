@@ -14,9 +14,9 @@ export function DebugHud() {
       ref.current.textContent = [
         s.engine,
         `render ${s.renderFps.toFixed(0)} fps`,
-        `engine ${s.trackFps.toFixed(0)} fps`,
-        `image  ${s.imageState}  ${s.target}`,
-        `world  ${s.worldState}  conf ${(s.confidence * 100).toFixed(0)}%`,
+        `track  ${s.trackFps.toFixed(0)} fps  ${s.frameMs.toFixed(0)} ms`,
+        `mode   ${s.mode}`,
+        `image  ${s.imageState}  #${s.target}  ${s.points} pts`,
       ].join('\n');
     }, 300);
     return () => window.clearInterval(timer);

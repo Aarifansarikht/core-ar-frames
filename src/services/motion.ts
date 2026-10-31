@@ -1,26 +1,3 @@
-import type { XR8Engine } from '../types/xr8';
-
-const LOAD_TIMEOUT_MS = 30000;
-
-/** Waits for the engine that index.html loads. Rejects if it can't be downloaded. */
-export function loadEngine() {
-  return new Promise<XR8Engine>((resolve, reject) => {
-    if (window.XR8) {
-      resolve(window.XR8);
-      return;
-    }
-    const timer = window.setTimeout(() => reject(new Error('The AR engine did not load')), LOAD_TIMEOUT_MS);
-    window.addEventListener(
-      'xrloaded',
-      () => {
-        window.clearTimeout(timer);
-        resolve(window.XR8!);
-      },
-      { once: true },
-    );
-  });
-}
-
 interface MotionPermission {
   requestPermission?(): Promise<'granted' | 'denied'>;
 }

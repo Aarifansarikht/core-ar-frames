@@ -1,9 +1,11 @@
 export type UnsupportedReason = 'insecure' | 'no-webgl' | 'incompatible';
 
 export interface Capabilities {
-  /** Null when the device can run the engine, as far as can be told. */
+  /** Null when the device has everything the tracker needs. */
   unsupported: UnsupportedReason | null;
   isInAppBrowser: boolean;
+  /** Motion sensors can only be expected on a device held in the hand. */
+  hasMotion: boolean;
 }
 
 const hasWebGL2 = () => {
@@ -17,7 +19,6 @@ const hasWebGL2 = () => {
   }
 };
 
-/** The engine makes the final call on the device once it has loaded. */
 export function detectCapabilities(): Capabilities {
   const ua = navigator.userAgent;
   // Facebook, Instagram, etc. webviews commonly don't offer the camera.
@@ -26,6 +27,14 @@ export function detectCapabilities(): Capabilities {
   let unsupported: UnsupportedReason | null = null;
   if (!window.isSecureContext) unsupported = 'insecure';
   else if (!hasWebGL2()) unsupported = 'no-webgl';
+  else if (
+    !navigator.mediaDevices?.getUserMedia ||
+    typeof OffscreenCanvas === 'undefined' ||
+    typeof WebAssembly === 'undefined' ||
+    !('requestVideoFrameCallback' in HTMLVideoElement.prototype)
+  ) {
+    unsupported = 'incompatible';
+  }
 
-  return { unsupported, isInAppBrowser };
+  return { unsupported, isInAppBrowser, hasMotion: navigator.maxTouchPoints > 0 };
 }

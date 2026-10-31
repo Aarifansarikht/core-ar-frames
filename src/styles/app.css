@@ -230,17 +230,6 @@ button {
   margin-bottom: 10px;
 }
 
-.legal {
-  color: var(--ink-soft);
-  font-size: 11px;
-  line-height: 1.4;
-  text-align: center;
-}
-
-.legal a {
-  color: inherit;
-}
-
 /* Permission, error */
 .card {
   display: flex;

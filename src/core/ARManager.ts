@@ -1,10 +1,10 @@
-import type { PlacementState } from '../adapters/EightWallAdapter';
-import { EXPERIENCES, readRuntimeOptions, targetUrl, type ExperienceConfig, type HotspotConfig, type RuntimeOptions } from '../config/experiences';
+import type { PlacementState } from '../adapters/VisionAdapter';
+import { EXPERIENCES, opencvUrl, readRuntimeOptions, targetUrl, type ExperienceConfig, type HotspotConfig, type RuntimeOptions } from '../config/experiences';
 import { detectCapabilities, type Capabilities } from '../services/capabilities';
-import { loadEngine, requestMotionAccess } from '../services/engine';
 import { describeError, EngineError } from '../services/errors';
+import { requestMotionAccess } from '../services/motion';
+import { TrackerClient } from '../tracking/TrackerClient';
 import type { ARErrorInfo, ARErrorKind, ARPhase, PoseSample, TrackingStats } from '../types/ar';
-import type { ImageTargetData, XR8Engine } from '../types/xr8';
 import type { ARRuntime } from './ARRuntime';
 
 export interface ARState {
@@ -18,7 +18,7 @@ export interface ARState {
   error: ARErrorInfo | null;
   hotspot: HotspotConfig | null;
   canPlaceInRoom: boolean;
-  /** The engine and poster data have loaded, so a tap can start a session. */
+  /** The tracker has loaded, so a tap can start a session. */
   ready: boolean;
   /** The browser blocked muted video autoplay; a tap is needed. */
   videoBlocked: boolean;
@@ -55,8 +55,7 @@ export class ARManager {
   private sessionId = 0;
   private recoveredTimer = 0;
   private poseLog: { t: number; m: number[]; c: number }[] = [];
-  private engine: XR8Engine | null = null;
-  private targets: ImageTargetData[] | null = null;
+  private tracker: TrackerClient | null = null;
 
   constructor() {
     if (!this.capabilities.unsupported) void this.prepare();
@@ -82,20 +81,18 @@ export class ARManager {
 
   /** Starts poster tracking. Must run from a user gesture. */
   start = async () => {
-    const targets = this.targets;
-    if (!targets) return;
-    const motion = requestMotionAccess(); // Must happen in the tap, before anything is awaited.
+    if (!this.tracker) return;
 
     const id = this.beginSession();
     this.set({ phase: 'permission', error: null, progress: 0, progressLabel: 'Starting', hotspot: null, placement: null, videoBlocked: false });
 
-    await this.runSession(motion, id, (runtime) => runtime.startPosterTracking(targets));
+    await this.runSession(Promise.resolve(true), id, (runtime) => runtime.startPosterTracking());
   };
 
   /** Starts placing content on the floor. Must run from a user gesture. */
   placeInRoom = async () => {
     const config = this.options.deepLink ?? EXPERIENCES.find((e) => e.placeable);
-    if (!config?.placeable || !this.engine) return;
+    if (!config?.placeable || !this.tracker) return;
     const motion = requestMotionAccess(); // Must happen in the tap, before anything is awaited.
 
     const id = this.beginSession();
@@ -115,11 +112,11 @@ export class ARManager {
   /** Ends the experience. The camera is off by the time this returns. */
   stop = () => {
     this.beginSession();
-    this.set({ ...initialState(this.options, this.capabilities), canPlaceInRoom: this.state.canPlaceInRoom, ready: !!this.targets });
+    this.set({ ...initialState(this.options, this.capabilities), canPlaceInRoom: this.state.canPlaceInRoom, ready: !!this.tracker });
   };
 
   retry = () => {
-    if (this.targets) {
+    if (this.tracker) {
       void this.start();
     } else {
       this.stop();
@@ -127,7 +124,7 @@ export class ARManager {
     }
   };
 
-  /** Waits for the motion prompt, then hands over to a new runtime. */
+  /** Waits for any motion prompt, then hands over to a new runtime. */
   private async runSession(motion: Promise<boolean>, id: number, begin: (runtime: ARRuntime) => Promise<void>) {
     if (!(await motion)) {
       if (id === this.sessionId) this.fail('motion-denied', 'motion access was refused');
@@ -149,30 +146,20 @@ export class ARManager {
     }
   }
 
-  /** Loads what a tap needs, so that the session can start as soon as the user asks. */
+  /** Loads the tracker before it's needed, so that the session can start as soon as the user asks. */
   private async prepare() {
     const list = this.options.deepLink ? [this.options.deepLink] : EXPERIENCES;
+    const tracker = new TrackerClient(
+      opencvUrl(),
+      list.map(({ id }) => targetUrl(id)),
+    );
     try {
-      const [engine, targets] = await Promise.all([
-        loadEngine(),
-        Promise.all(
-          list.map(async ({ id }) => {
-            const response = await fetch(targetUrl(id));
-            if (!response.ok) throw new Error(`${targetUrl(id)}: HTTP ${response.status}`);
-            return (await response.json()) as ImageTargetData;
-          }),
-        ),
-      ]);
-      if (!engine.XrDevice.isDeviceBrowserCompatible()) {
-        this.capabilities = { ...this.capabilities, unsupported: 'incompatible' };
-        this.set({ phase: 'unsupported' });
-        return;
-      }
-      this.engine = engine;
-      this.targets = targets;
+      await tracker.whenReady();
+      this.tracker = tracker;
       const placeable = (this.options.deepLink ?? EXPERIENCES.find((e) => e.placeable))?.placeable ?? false;
-      this.set({ ready: true, canPlaceInRoom: placeable });
+      this.set({ ready: true, canPlaceInRoom: placeable && this.capabilities.hasMotion });
     } catch (err) {
+      tracker.dispose();
       if (this.state.phase === 'welcome') this.fail('asset-load', err);
     }
   }
@@ -189,7 +176,7 @@ export class ARManager {
   private async createRuntime() {
     const { ARRuntime } = await import('./ARRuntime');
     if (!this.container) throw new Error('AR container is not mounted');
-    return new ARRuntime(this.container, this.engine!, this.options, {
+    return new ARRuntime(this.container, this.tracker!, this.options, {
       cameraGranted: () => {
         if (this.state.phase === 'permission') this.set({ phase: 'initializing' });
       },

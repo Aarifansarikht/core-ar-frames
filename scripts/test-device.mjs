@@ -5,7 +5,7 @@
 //   npm run build && npm run test:device -- ceat-tyre
 //
 // While it runs, point the phone at the poster, turn away from it, then point back. It records what
-// the engine reports, how long the first lock took, and what happened each time the poster came back.
+// the tracker reports, how long the first lock took, and what happened each time the poster came back.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -58,7 +58,7 @@ if (report.afterStart.phase === 'scanning') {
   let firstLockMs = null;
   while (Date.now() - started < RUN_MS) {
     const s = await page.evaluate(() => ({ phase: window.__AR__.state().phase, stats: window.__AR__.stats() }));
-    const key = `${s.phase}/${s.stats?.imageState}/${s.stats?.worldState}`;
+    const key = `${s.phase}/${s.stats?.imageState}/${s.stats?.mode}`;
     if (s.stats?.trackFps) fps.push(s.stats.trackFps);
     if (timeline.at(-1)?.state !== key) timeline.push({ atMs: Date.now() - started, state: key });
     if (firstLockMs === null && s.stats?.imageState === 'tracked') firstLockMs = Date.now() - started;
@@ -66,7 +66,7 @@ if (report.afterStart.phase === 'scanning') {
     await page.waitForTimeout(100);
   }
   report.firstLockMs = firstLockMs;
-  report.engineFps = fps.sort((a, b) => a - b)[fps.length >> 1] ?? null;
+  report.trackFps = fps.sort((a, b) => a - b)[fps.length >> 1] ?? null;
   report.timeline = timeline;
   await page.getByRole('button', { name: 'Close' }).tap().catch(() => undefined);
 }

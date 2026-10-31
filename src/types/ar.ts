@@ -31,14 +31,13 @@ export interface ARErrorInfo {
   canRetry: boolean;
 }
 
-export type TrackingKind = '8thwall';
+export type TrackingKind = 'vision';
 
 /** One tracker result. `matrix` is valid only for the synchronous duration of the call. */
 export interface PoseSample {
   targetIndex: number;
-  /** Content root to the engine's world. */
+  /** Content root to the scene's world. For posters, that is the camera's own frame. */
   matrix: Matrix4;
-  /** 1 when the engine sees the poster now, 0.5 when it holds the poster's last known place in the room. */
   confidence: number;
   /** Time of the frame, in seconds. */
   time: number;
@@ -46,15 +45,19 @@ export interface PoseSample {
 
 export interface TrackingStats {
   engine: string;
-  /** Engine frames per second. */
+  /** Frames the tracker gets through per second. */
   trackFps: number;
   confidence: number;
-  /** The current poster: tracked (seen now), held (a remembered place) or none. */
+  /** The current poster: tracked or none. */
   imageState: string;
-  /** How the engine is tracking the room: NORMAL or LIMITED. */
-  worldState: string;
-  /** The current poster's id. */
-  target: string;
+  /** What the tracker did last: search, follow or refine. Or room. */
+  mode: string;
+  /** The current poster, as its place in the list of targets, or -1. */
+  target: number;
+  /** Points that agreed with the pose. */
+  points: number;
+  /** How long the last frame took to process, in milliseconds. */
+  frameMs: number;
 }
 
 /** What a tracking adapter reports to TrackingManager. Adapters never touch UI or content. */

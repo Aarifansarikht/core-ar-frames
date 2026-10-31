@@ -1,21 +1,20 @@
 import { Raycaster, Vector2 } from 'three';
-import { EightWallAdapter, type PlacementState } from '../adapters/EightWallAdapter';
+import { VisionAdapter, type PlacementState } from '../adapters/VisionAdapter';
 import { EXPERIENCES, type ExperienceConfig, type HotspotConfig, type RuntimeOptions } from '../config/experiences';
 import type { Experience } from '../content/Experience';
 import { TyreExperience } from '../content/TyreExperience';
 import { VideoExperience } from '../content/VideoExperience';
 import { ContentVideo } from '../services/ContentVideo';
-import { EngineError } from '../services/errors';
 import type { ARErrorKind, PoseSample, TrackingStats } from '../types/ar';
-import type { ImageTargetData, XR8Engine } from '../types/xr8';
+import type { TrackerClient } from '../tracking/TrackerClient';
 import { LightingManager } from './LightingManager';
 import { ModelManager } from './ModelManager';
 import { detectTier, qualityFor } from './PerformanceManager';
-import { SceneManager, sizeCanvas } from './SceneManager';
+import { SceneManager } from './SceneManager';
 import { TrackingManager } from './TrackingManager';
 
 export interface RuntimeEvents {
-  /** The user allowed the camera, and the engine is starting. */
+  /** The user allowed the camera. */
   cameraGranted(): void;
   progress(fraction: number, label: string): void;
   found(config: ExperienceConfig): void;
@@ -36,17 +35,16 @@ export interface RuntimeEvents {
 }
 
 /**
- * Everything that needs Three.js and the engine, split out of ARManager so the welcome screen stays
+ * Everything that needs Three.js and the camera, split out of ARManager so the welcome screen stays
  * small. One runtime exists per running session and is thrown away afterwards, which is how the camera
  * and every GPU resource get released on a single code path.
  */
 export class ARRuntime {
   scene: SceneManager | null = null;
 
-  private adapter: EightWallAdapter | null = null;
+  private adapter: VisionAdapter | null = null;
   private lighting: LightingManager | null = null;
   private models: ModelManager | null = null;
-  private readonly canvas = document.createElement('canvas');
   private readonly tracking: TrackingManager;
   private experience: Experience | null = null;
   private readonly experiences = new Map<string, Promise<Experience>>();
@@ -60,7 +58,7 @@ export class ARRuntime {
 
   constructor(
     private readonly container: HTMLElement,
-    private readonly engine: XR8Engine,
+    private readonly tracker: TrackerClient,
     private readonly options: RuntimeOptions,
     private readonly events: RuntimeEvents,
   ) {
@@ -73,9 +71,9 @@ export class ARRuntime {
     });
   }
 
-  /** Locks posters. Poses refer to posters by their place in `targets`. */
-  async startPosterTracking(targets: ImageTargetData[]) {
-    await this.startEngine('poster', targets);
+  /** Locks posters. */
+  async startPosterTracking() {
+    await this.startCamera('poster');
     const deepLink = this.options.deepLink;
     window.addEventListener('click', this.onTap);
     if (deepLink) {
@@ -92,7 +90,7 @@ export class ARRuntime {
   }
 
   async startPlacement(config: ExperienceConfig) {
-    await this.startEngine('room', []);
+    await this.startCamera('room');
     try {
       this.experience = await this.prepareExperience(config, (f) => this.events.progress(f, 'Loading content'));
     } catch (err) {
@@ -111,7 +109,7 @@ export class ARRuntime {
     return this.scene?.performance.fps ?? 0;
   }
 
-  /** Stops the engine, which turns the camera off, and releases the GPU. Safe to call more than once. */
+  /** Turns the camera off and releases the GPU. Safe to call more than once. */
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
@@ -128,36 +126,16 @@ export class ARRuntime {
     this.models?.dispose();
     this.scene?.dispose();
     this.scene = null;
-    this.canvas.remove();
   }
 
-  /** Resolves when the camera is running and the scene exists. */
-  private startEngine(mode: 'poster' | 'room', targets: ImageTargetData[]) {
-    const quality = qualityFor(detectTier());
-    this.canvas.className = 'ar-canvas';
-    this.container.appendChild(this.canvas);
-    sizeCanvas(this.canvas, this.container, Math.min(window.devicePixelRatio || 1, quality.maxPixelRatio));
-
-    this.adapter = new EightWallAdapter({
-      engine: this.engine,
-      canvas: this.canvas,
-      mode,
-      targets,
-      createScene: (gl) => this.createScene(gl),
-      onCameraGranted: () => this.events.cameraGranted(),
-      onFatal: (detail) => this.events.fatal('tracking-init', detail),
-      getPlaceable: () => this.experience,
-      onPlacementState: (state) => this.events.placementState(state),
-    });
-    return this.tracking.start(this.adapter);
-  }
-
-  private createScene(gl: WebGL2RenderingContext) {
+  /** Resolves when the camera is running. */
+  private startCamera(mode: 'poster' | 'room') {
     let scene: SceneManager;
     try {
-      scene = new SceneManager(this.container, gl, qualityFor(detectTier()));
+      scene = new SceneManager(this.container, qualityFor(detectTier()));
     } catch (err) {
-      throw new EngineError('webgl-init', err);
+      this.events.fatal('webgl-init', err);
+      throw err;
     }
     this.scene = scene;
     this.lighting = new LightingManager(scene.renderer, scene.scene);
@@ -167,7 +145,16 @@ export class ARRuntime {
       this.tracking.tick();
       this.experience?.update(dt, time);
     });
-    return scene;
+    this.adapter = new VisionAdapter({
+      scene,
+      mode,
+      tracker: this.tracker,
+      onCameraGranted: () => this.events.cameraGranted(),
+      onFatal: (detail) => this.events.fatal('tracking-init', detail),
+      getPlaceable: () => this.experience,
+      onPlacementState: (state) => this.events.placementState(state),
+    });
+    return this.tracking.start(this.adapter);
   }
 
   /** Loads each poster's content once, and keeps it, so that going back to a poster is instant. */
@@ -262,7 +249,7 @@ export class ARRuntime {
     const experience = this.experience;
     const scene = this.scene;
     if (!experience || !scene || !this.entered) return;
-    const rect = this.canvas.getBoundingClientRect();
+    const rect = scene.renderer.domElement.getBoundingClientRect();
     this.pointer.set(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1);
     this.raycaster.setFromCamera(this.pointer, scene.camera);
     this.events.hotspot(experience.select(this.raycaster));

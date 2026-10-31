@@ -1,14 +1,20 @@
 import {
   ACESFilmicToneMapping,
   Group,
+  LinearFilter,
   type Matrix4,
+  Mesh,
   PerspectiveCamera,
+  PlaneGeometry,
   Scene,
+  ShaderMaterial,
   SRGBColorSpace,
+  Texture,
   Timer,
+  Vector2,
+  VideoTexture,
   WebGLRenderer,
 } from 'three';
-import type { XR8Reality } from '../types/xr8';
 import { PerformanceManager, type QualityProfile } from './PerformanceManager';
 
 export interface SceneListener {
@@ -17,15 +23,12 @@ export interface SceneListener {
 
 export type FrameCallback = (dt: number, time: number) => void;
 
-/** Sizes a canvas for the screen, in device pixels. */
-export function sizeCanvas(canvas: HTMLCanvasElement, container: HTMLElement, pixelRatio: number) {
-  canvas.width = Math.max(1, Math.round(container.clientWidth * pixelRatio));
-  canvas.height = Math.max(1, Math.round(container.clientHeight * pixelRatio));
-}
+const NEAR = 0.01;
+const FAR = 100;
 
 /**
- * The renderer. It draws into the engine's GL context, over the camera image that the engine has just
- * drawn, once per engine frame. Holds the content anchor that the tracker positions through a pose matrix.
+ * The renderer. Holds the single animation loop in the app, the camera image behind everything, and the
+ * content anchor that the tracker positions through a pose matrix.
  */
 export class SceneManager {
   readonly renderer: WebGLRenderer;
@@ -38,26 +41,73 @@ export class SceneManager {
   private readonly timer = new Timer();
   private readonly frameCallbacks = new Set<FrameCallback>();
   private readonly resizeObserver: ResizeObserver;
-  private readonly canvas: HTMLCanvasElement;
   private listener: SceneListener = {};
   private contextLost = false;
   private disposed = false;
 
+  private readonly backgroundScene = new Scene();
+  private readonly backgroundCamera = new PerspectiveCamera();
+  private readonly background: ShaderMaterial;
+  private live: VideoTexture | null = null;
+  private readonly frameTexture = new Texture();
+  private shownFrame: ImageBitmap | null = null;
+  private imageWidth = 0;
+  private imageHeight = 0;
+  /** The lens: focal length, and the image size that it is in pixels of. */
+  private lens: { width: number; height: number; focal: number } | null = null;
+
   constructor(
     private readonly container: HTMLElement,
-    gl: WebGL2RenderingContext,
     quality: QualityProfile,
   ) {
-    this.canvas = gl.canvas as HTMLCanvasElement;
-    this.renderer = new WebGLRenderer({ canvas: this.canvas, context: gl });
-    this.renderer.autoClear = false; // The camera image is already in the frame.
+    this.renderer = new WebGLRenderer({
+      antialias: false, // At phone pixel density it costs far more than it shows.
+      powerPreference: 'high-performance',
+      failIfMajorPerformanceCaveat: false,
+    });
+    this.renderer.autoClear = false;
     this.renderer.outputColorSpace = SRGBColorSpace;
     this.renderer.toneMapping = ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1;
 
-    this.canvas.addEventListener('webglcontextlost', this.onContextLost);
+    const canvas = this.renderer.domElement;
+    canvas.className = 'ar-canvas';
+    canvas.addEventListener('webglcontextlost', this.onContextLost);
+    container.appendChild(canvas);
 
-    this.performance = new PerformanceManager(quality, () => this.syncSize());
+    // Fills the screen, cropping the image to fit. No colour conversion: the camera's values go straight out.
+    this.frameTexture.minFilter = LinearFilter;
+    this.frameTexture.magFilter = LinearFilter;
+    this.frameTexture.generateMipmaps = false;
+    this.frameTexture.flipY = false;
+    this.background = new ShaderMaterial({
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+      uniforms: { map: { value: null }, crop: { value: new Vector2(1, 1) }, flip: { value: 0 } },
+      vertexShader: `
+        varying vec2 vUv;
+        uniform vec2 crop;
+        uniform float flip;
+        void main() {
+          vec2 cropped = (uv - 0.5) * crop + 0.5;
+          vUv = vec2(cropped.x, flip > 0.5 ? 1.0 - cropped.y : cropped.y);
+          gl_Position = vec4(position.xy * 2.0, 0.0, 1.0);
+        }`,
+      fragmentShader: `
+        varying vec2 vUv;
+        uniform sampler2D map;
+        void main() { gl_FragColor = texture2D(map, vUv); }`,
+    });
+    const quad = new Mesh(new PlaneGeometry(1, 1), this.background);
+    quad.frustumCulled = false;
+    this.backgroundScene.add(quad);
+
+    this.performance = new PerformanceManager(quality, (ratio) => {
+      this.renderer.setPixelRatio(ratio);
+      this.syncSize();
+    });
+    this.renderer.setPixelRatio(this.performance.pixelRatio);
 
     this.anchor.matrixAutoUpdate = false;
     this.anchor.visible = false;
@@ -68,6 +118,7 @@ export class SceneManager {
     this.syncSize();
 
     this.timer.connect(document);
+    this.renderer.setAnimationLoop(this.tick);
   }
 
   setListener(listener: SceneListener) {
@@ -85,46 +136,109 @@ export class SceneManager {
     this.anchor.matrixWorldNeedsUpdate = true;
   }
 
-  /** Follows the phone's pose and lens. The lens is what lines content up with the camera image. */
-  setCamera({ position, rotation, intrinsics }: XR8Reality) {
-    this.camera.position.set(position.x, position.y, position.z);
-    this.camera.quaternion.set(rotation.x, rotation.y, rotation.z, rotation.w);
-    this.camera.updateMatrixWorld();
-    if (!Number.isFinite(intrinsics[0])) return; // Not known until the first camera frame has a size.
-    this.camera.projectionMatrix.fromArray(intrinsics as number[]);
+  /** Shows the camera as it arrives. */
+  showLiveCamera(video: HTMLVideoElement) {
+    if (!this.live) this.live = new VideoTexture(video);
+    if (this.live.image !== video) this.live.image = video;
+    this.releaseFrame();
+    this.background.uniforms.map.value = this.live;
+    // Three.js flips video as it uploads it, so unlike a bitmap it doesn't need flipping here.
+    this.background.uniforms.flip.value = 0;
+    this.imageWidth = video.videoWidth;
+    this.imageHeight = video.videoHeight;
+    this.updateCrop();
+  }
+
+  /** Shows one frame, which this now owns. Draws with the pose worked out from that same frame. */
+  showFrame(frame: ImageBitmap) {
+    this.releaseFrame();
+    this.shownFrame = frame;
+    this.frameTexture.image = frame;
+    this.frameTexture.needsUpdate = true;
+    this.background.uniforms.map.value = this.frameTexture;
+    // Browsers ignore the flip setting when uploading a bitmap, so it arrives top row first.
+    this.background.uniforms.flip.value = 1;
+    this.imageWidth = frame.width;
+    this.imageHeight = frame.height;
+    this.updateCrop();
+  }
+
+  /**
+   * Sets the lens: an image of this size, at this focal length, filling the screen as the background does.
+   * Everything drawn then lines up with the camera image.
+   */
+  setProjection(imageWidth: number, imageHeight: number, focal: number) {
+    this.lens = { width: imageWidth, height: imageHeight, focal };
+    const { clientWidth: w, clientHeight: h } = this.container;
+    if (!w || !h) return;
+    const fill = Math.max(w / imageWidth, h / imageHeight);
+    const a = (2 * focal * fill) / w;
+    const b = (2 * focal * fill) / h;
+    this.camera.projectionMatrix.set(
+      a, 0, 0, 0,
+      0, b, 0, 0,
+      0, 0, -(FAR + NEAR) / (FAR - NEAR), (-2 * FAR * NEAR) / (FAR - NEAR),
+      0, 0, -1, 0,
+    );
     this.camera.projectionMatrixInverse.copy(this.camera.projectionMatrix).invert();
   }
 
-  /** Called by the engine, after it has drawn the camera image. */
-  render() {
-    if (this.contextLost || this.disposed) return;
-    this.timer.update();
-    const dt = Math.min(this.timer.getDelta(), 0.1);
-    const time = this.timer.getElapsed();
-    this.performance.frame(dt);
-    for (const callback of this.frameCallbacks) callback(dt, time);
-    this.renderer.resetState(); // The engine has its own GL state, which three.js can't know about.
-    this.renderer.clearDepth();
-    this.renderer.render(this.scene, this.camera);
+  /** For room placement: a camera at a fixed height, whose lens is assumed. */
+  setRoomCamera(video: HTMLVideoElement, focalFraction: number, height: number) {
+    this.camera.position.set(0, height, 0);
+    this.setProjection(video.videoWidth, video.videoHeight, focalFraction * Math.max(video.videoWidth, video.videoHeight));
   }
 
-  /** The engine owns the context, and the caller the canvas, so neither is torn down here. */
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    this.renderer.setAnimationLoop(null);
     this.resizeObserver.disconnect();
     this.timer.dispose();
     this.frameCallbacks.clear();
-    this.canvas.removeEventListener('webglcontextlost', this.onContextLost);
+    this.releaseFrame();
+    this.live?.dispose();
+    this.frameTexture.dispose();
+    this.background.dispose();
+    const canvas = this.renderer.domElement;
+    canvas.removeEventListener('webglcontextlost', this.onContextLost);
     this.renderer.dispose();
+    this.renderer.forceContextLoss();
+    canvas.remove();
+  }
+
+  private releaseFrame() {
+    this.shownFrame?.close();
+    this.shownFrame = null;
+  }
+
+  private updateCrop() {
+    const { clientWidth: w, clientHeight: h } = this.container;
+    if (!w || !h || !this.imageWidth || !this.imageHeight) return;
+    const fill = Math.max(w / this.imageWidth, h / this.imageHeight);
+    this.background.uniforms.crop.value.set(w / (this.imageWidth * fill), h / (this.imageHeight * fill));
   }
 
   private syncSize() {
     const { clientWidth: w, clientHeight: h } = this.container;
     if (!w || !h) return;
-    sizeCanvas(this.canvas, this.container, this.performance.pixelRatio);
-    this.renderer.setViewport(0, 0, this.canvas.width, this.canvas.height);
+    this.renderer.setSize(w, h, false);
+    this.updateCrop();
+    if (this.lens) this.setProjection(this.lens.width, this.lens.height, this.lens.focal);
   }
+
+  private readonly tick = () => {
+    if (this.contextLost) return;
+    this.timer.update();
+    const dt = Math.min(this.timer.getDelta(), 0.1);
+    const time = this.timer.getElapsed();
+    this.performance.frame(dt);
+    for (const callback of this.frameCallbacks) callback(dt, time);
+    this.renderer.clear();
+    this.renderer.render(this.backgroundScene, this.backgroundCamera);
+    this.renderer.clearDepth();
+    this.renderer.render(this.scene, this.camera);
+  };
 
   private readonly onContextLost = (event: Event) => {
     event.preventDefault(); // Without this the browser never restores the context.

@@ -1,20 +1,17 @@
 import type { ARErrorInfo, ARErrorKind } from '../types/ar';
 
-/** The engine couldn't start, for a reason the user may be able to fix. */
+/** AR couldn't start, for a reason the user may be able to fix. */
 export class EngineError extends Error {
   constructor(
     readonly kind: ARErrorKind,
     readonly detail: unknown,
   ) {
-    super(`AR engine: ${kind}`);
+    super(`AR: ${kind}`);
   }
 }
 
-/** Sorts what the engine reports, such as `{type: 'permission', permission: 'deviceorientation'}`. */
+/** Sorts what getUserMedia rejects with. */
 export function errorKindFor(detail: unknown): ARErrorKind {
-  const { type, permission, reason } = (detail ?? {}) as { type?: string; permission?: string; reason?: string };
-  if (type === 'permission') return permission === 'deviceorientation' || permission === 'devicemotion' ? 'motion-denied' : 'camera-denied';
-  if (reason === 'DENY_CAMERA') return 'camera-denied';
   if (detail instanceof DOMException && (detail.name === 'NotAllowedError' || detail.name === 'SecurityError')) return 'camera-denied';
   return 'camera-failed';
 }
