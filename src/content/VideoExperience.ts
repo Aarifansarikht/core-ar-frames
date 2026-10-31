@@ -109,7 +109,7 @@ export class VideoExperience implements Experience {
   }
 
   dispose() {
-    this.video.release();
+    this.video.dispose();
     this.texture?.dispose();
     this.material.dispose();
     this.root.geometry.dispose();

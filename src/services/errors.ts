@@ -1,5 +1,8 @@
 import type { ARErrorInfo, ARErrorKind } from '../types/ar';
 
+/** The session started, but Chrome didn't grant the camera image that finding posters needs. */
+export class CameraAccessError extends Error {}
+
 export function describeError(kind: ARErrorKind): ARErrorInfo {
   switch (kind) {
     case 'camera-denied':
@@ -9,12 +12,18 @@ export function describeError(kind: ARErrorKind): ARErrorInfo {
         message: 'Tap the icon next to the address bar, open Permissions, allow Camera and AR, then try again.',
         canRetry: true,
       };
-    case 'xr-image-tracking':
+    case 'xr-camera':
       return {
         kind,
-        title: 'Turn on image tracking in Chrome',
-        message:
-          'Open chrome://flags/#webxr-incubations, set WebXR Incubations to Enabled and relaunch Chrome. Also check that Google Play Services for AR is up to date, then open this page again.',
+        title: 'Camera access is needed',
+        message: 'Finding posters needs the camera. Choose Allow when Chrome asks, and update Chrome if it doesn’t ask.',
+        canRetry: true,
+      };
+    case 'tracking-init':
+      return {
+        kind,
+        title: 'Couldn’t start poster recognition',
+        message: 'The device may be short on memory, or the connection dropped. Close some tabs and try again.',
         canRetry: true,
       };
     case 'xr-session':

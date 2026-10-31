@@ -15,7 +15,8 @@ export type ARPhase =
 
 export type ARErrorKind =
   | 'camera-denied'
-  | 'xr-image-tracking'
+  | 'xr-camera'
+  | 'tracking-init'
   | 'xr-session'
   | 'asset-load'
   | 'webgl-init'
@@ -48,12 +49,14 @@ export interface TrackingStats {
   /** XR frames per second. */
   trackFps: number;
   confidence: number;
-  /** ARCore's state for the current poster: tracked, emulated or none. */
+  /** The current poster: tracked (seen now), emulated (a remembered place) or none. */
   imageState: string;
-  /** ARCore's verdict on each poster's detail, in list order. */
+  /** ARCore's verdict on each poster's detail, in list order. Only with its own image tracking. */
   imageScores: string[];
-  /** The poster width ARCore measured, in metres. */
+  /** The poster width measured so far, in metres. */
   measuredWidth: number;
+  /** Time taken by the last recognition, in milliseconds. Only without ARCore's own image tracking. */
+  recogniseMs: number;
 }
 
 /** What a tracking adapter reports to TrackingManager. Adapters never touch UI or content. */

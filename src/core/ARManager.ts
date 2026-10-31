@@ -1,8 +1,7 @@
 import type { PlacementState } from '../adapters/WebXRAdapter';
 import { EXPERIENCES, readRuntimeOptions, type ExperienceConfig, type HotspotConfig, type RuntimeOptions } from '../config/experiences';
 import { detectCapabilities, supportsImmersiveAR, type Capabilities } from '../services/capabilities';
-import { ContentVideo } from '../services/ContentVideo';
-import { describeError } from '../services/errors';
+import { CameraAccessError, describeError } from '../services/errors';
 import type { ARErrorInfo, ARErrorKind, ARPhase, PoseSample, TrackingStats } from '../types/ar';
 import type { ARRuntime } from './ARRuntime';
 
@@ -50,7 +49,6 @@ export class ARManager {
   private readonly listeners = new Set<() => void>();
 
   private runtime: ARRuntime | null = null;
-  private readonly video = new ContentVideo();
   private container: HTMLElement | null = null;
   private sessionId = 0;
   private recoveredTimer = 0;
@@ -58,7 +56,6 @@ export class ARManager {
   private trackedImages: { image: ImageBitmap; widthInMeters: number }[] | null = null;
 
   constructor() {
-    this.video.onBlocked = () => this.set({ videoBlocked: true });
     if (!this.capabilities.unsupported) {
       void supportsImmersiveAR().then((supported) => {
         if (!supported) {
@@ -97,22 +94,16 @@ export class ARManager {
     if (!trackedImages) return;
     // requestSession must be the first thing that happens in the tap, before anything is awaited.
     const requested = navigator.xr!.requestSession('immersive-ar', {
-      requiredFeatures: ['image-tracking'],
-      optionalFeatures: ['dom-overlay', 'light-estimation'],
+      // ARCore's own image tracking if Chrome offers it, otherwise the camera image for the recogniser.
+      optionalFeatures: ['image-tracking', 'camera-access', 'dom-overlay'],
       domOverlay: { root: document.getElementById('ar-overlay') ?? document.body },
       trackedImages,
     } as XRSessionInit);
 
-    this.video.unlock();
     const id = this.beginSession();
     this.set({ phase: 'permission', error: null, progress: 0, progressLabel: 'Starting', hotspot: null, placement: null, videoBlocked: false });
 
-    await this.runSession(
-      requested,
-      (error) => (error === 'NotSupportedError' ? 'xr-image-tracking' : 'xr-session'),
-      id,
-      (runtime, session) => runtime.startPosterTracking(session),
-    );
+    await this.runSession(requested, id, (runtime, session) => runtime.startPosterTracking(session));
   };
 
   /** Starts room placement with WebXR hit testing. Must run from a user gesture. */
@@ -127,7 +118,6 @@ export class ARManager {
       domOverlay: { root: document.getElementById('ar-overlay') ?? document.body },
     });
 
-    this.video.unlock();
     const id = this.beginSession();
     this.set({
       phase: 'permission',
@@ -139,7 +129,7 @@ export class ARManager {
       placement: 'searching',
     });
 
-    await this.runSession(requested, () => 'xr-session', id, (runtime, session) => runtime.startPlacement(session, config));
+    await this.runSession(requested, id, (runtime, session) => runtime.startPlacement(session, config));
   };
 
   /** Ends the experience. The camera is off by the time this returns. */
@@ -160,7 +150,6 @@ export class ARManager {
   /** Waits for the requested session, then hands it to a new runtime. */
   private async runSession(
     requested: Promise<XRSession>,
-    rejection: (errorName: string) => ARErrorKind,
     id: number,
     begin: (runtime: ARRuntime, session: XRSession) => Promise<void>,
   ) {
@@ -170,7 +159,7 @@ export class ARManager {
     } catch (err) {
       if (id !== this.sessionId) return;
       const name = err instanceof DOMException ? err.name : '';
-      this.fail(name === 'NotAllowedError' || name === 'SecurityError' ? 'camera-denied' : rejection(name), err);
+      this.fail(name === 'NotAllowedError' || name === 'SecurityError' ? 'camera-denied' : 'xr-session', err);
       return;
     }
     if (id !== this.sessionId) {
@@ -195,14 +184,13 @@ export class ARManager {
       if (id === this.sessionId && this.state.phase === 'initializing') this.set({ phase: 'scanning' });
     } catch (err) {
       void session.end().catch(() => undefined);
-      if (id === this.sessionId) this.fail('xr-session', err);
+      if (id === this.sessionId) this.fail(err instanceof CameraAccessError ? 'xr-camera' : 'xr-session', err);
     }
   }
 
   /**
-   * Decodes the posters ahead of time, because the session request can't wait on anything. ARCore
-   * reports each poster's measured width, so the printed width only needs to be roughly right.
-   * ARCore reports posters by their index in this list.
+   * Decodes the posters ahead of time, because the session request can't wait on anything. They are
+   * only used if Chrome grants ARCore's own image tracking, which reports posters by index in this list.
    */
   private async prepareTrackedImages() {
     const list = this.options.deepLink ? [this.options.deepLink] : EXPERIENCES;
@@ -233,7 +221,7 @@ export class ARManager {
   private async createRuntime() {
     const { ARRuntime } = await import('./ARRuntime');
     if (!this.container) throw new Error('AR container is not mounted');
-    return new ARRuntime(this.container, this.options, this.video, {
+    return new ARRuntime(this.container, this.options, {
       progress: (progress, progressLabel) => this.set({ progress, progressLabel }),
       found: (experience) => this.set({ phase: 'detected', experience, hotspot: null }),
       contentReady: () => {
@@ -254,10 +242,10 @@ export class ARManager {
       hotspot: (hotspot) => this.set({ hotspot }),
       placementState: (placement) => this.set({ placement }),
       xrEnded: () => this.stop(),
-      resumeBlockedVideo: () => {
+      videoBlocked: () => this.set({ videoBlocked: true }),
+      takeVideoBlocked: () => {
         if (!this.state.videoBlocked) return false;
         this.set({ videoBlocked: false });
-        this.video.retry();
         return true;
       },
       fatal: (kind, detail) => this.fail(kind, detail),

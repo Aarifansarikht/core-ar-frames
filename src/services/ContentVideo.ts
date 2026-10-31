@@ -1,35 +1,22 @@
-/**
- * One <video> element shared by all video experiences. iOS only lets a video play without a gesture
- * if that element has played during one, so the Start button unlocks this element once and later
- * source changes inherit that permission. Only one poster plays at a time anyway.
- */
+/** One poster's <video> element. Each poster keeps its own, loaded and ready, so switching is instant. */
 export class ContentVideo {
   readonly element: HTMLVideoElement;
   private wantPlaying = false;
 
-  /** Set when the browser refused to autoplay, e.g. iOS Low Power Mode. */
+  /** Set when the browser refused to autoplay. */
   onBlocked: (() => void) | null = null;
 
   constructor() {
     const video = document.createElement('video');
     video.setAttribute('playsinline', '');
-    video.setAttribute('webkit-playsinline', '');
     video.muted = true;
     video.loop = true;
     video.preload = 'auto';
     video.crossOrigin = 'anonymous';
-    // Kept in the DOM (invisibly) because WebKit may otherwise stop decoding frames.
+    // Kept in the DOM (invisibly) so that the browser keeps decoding frames.
     Object.assign(video.style, { position: 'fixed', top: '0', left: '0', width: '2px', height: '2px', opacity: '0', pointerEvents: 'none', zIndex: '-1' });
     document.body.appendChild(video);
     this.element = video;
-  }
-
-  /** Must be called directly from a user gesture. */
-  unlock() {
-    const video = this.element;
-    // WebKit lifts an element's playback restrictions on its first play() inside a gesture. There is
-    // no source yet, so the promise rejects; that is expected.
-    video.play().catch(() => undefined);
   }
 
   load(url: string, onProgress?: (fraction: number) => void) {
@@ -79,10 +66,10 @@ export class ContentVideo {
     this.element.pause();
   }
 
-  /** Detaches the current source but keeps the element, and its unlocked status, for the next one. */
-  release() {
+  dispose() {
     this.pause();
     this.element.removeAttribute('src');
     this.element.load();
+    this.element.remove();
   }
 }

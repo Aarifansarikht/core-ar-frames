@@ -41,7 +41,7 @@ export class SceneManager {
     quality: QualityProfile,
   ) {
     this.renderer = new WebGLRenderer({
-      antialias: quality.antialias,
+      antialias: false, // At phone pixel density it costs far more than it shows.
       alpha: true,
       powerPreference: 'high-performance',
       failIfMajorPerformanceCaveat: false,
@@ -50,6 +50,7 @@ export class SceneManager {
     this.renderer.toneMapping = ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1;
     this.renderer.xr.enabled = true;
+    this.renderer.xr.setFramebufferScaleFactor(quality.xrFramebufferScale);
     this.renderer.setClearColor(0x000000, 0);
 
     const canvas = this.renderer.domElement;

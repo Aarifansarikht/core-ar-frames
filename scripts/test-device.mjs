@@ -1,6 +1,6 @@
-// Tests ARCore image tracking on a real Android phone attached over USB, using `adb reverse` so that
-// http://localhost is a secure context on the device. Before running: enable USB debugging, set
-// chrome://flags/#webxr-incubations to Enabled, relaunch Chrome, and keep the phone unlocked.
+// Tests poster tracking on a real Android phone attached over USB, using `adb reverse` so that
+// http://localhost is a secure context on the device. Before running: enable USB debugging and keep the
+// phone unlocked.
 //
 //   npm run build && npm run test:device -- ceat-tyre
 //
@@ -54,17 +54,20 @@ report.afterStart = await page.evaluate(() => ({ phase: window.__AR__.state().ph
 if (report.afterStart.phase === 'scanning') {
   console.log(`Recording for ${RUN_MS / 1000} s. Lock the poster, turn away, then point back. Repeat a few times.`);
   const timeline = [];
+  const recognition = [];
   const started = Date.now();
   let firstLockMs = null;
   while (Date.now() - started < RUN_MS) {
     const s = await page.evaluate(() => ({ phase: window.__AR__.state().phase, stats: window.__AR__.stats() }));
     const key = `${s.phase}/${s.stats?.imageState}`;
+    if (s.stats?.recogniseMs) recognition.push(s.stats.recogniseMs);
     if (timeline.at(-1)?.state !== key) timeline.push({ atMs: Date.now() - started, state: key, width: s.stats?.measuredWidth });
     if (firstLockMs === null && s.stats?.imageState === 'tracked') firstLockMs = Date.now() - started;
     report.lastStats = s.stats;
     await page.waitForTimeout(100);
   }
   report.firstLockMs = firstLockMs;
+  report.recogniseMs = recognition.sort((a, b) => a - b)[recognition.length >> 1] ?? null;
   report.timeline = timeline;
   await page.getByRole('button', { name: 'Close' }).tap().catch(() => undefined);
 }

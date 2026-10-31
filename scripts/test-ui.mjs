@@ -1,6 +1,7 @@
 // Drives every user-facing state in real Chrome. ARCore can't run on a desktop, so most cases use a
-// scripted stand-in for navigator.xr that replays image-tracking results. This checks the app's handling
-// of those results: it says NOTHING about real tracking quality. Only test-device.mjs can measure that.
+// scripted stand-in for navigator.xr. The recogniser in the last section is the real one, looking at a
+// drawn camera image with a known camera path. Nothing here measures ARCore itself or a real camera:
+// only test-device.mjs can do that.
 // Screenshots land in .test-output/ui-*.png.
 //
 //   npm run build && npm run test:ui
@@ -28,7 +29,7 @@ const browser = await chromium.launch({ channel: 'chrome', headless: true, args:
 const phone = { viewport: { width: 412, height: 915 }, deviceScaleFactor: 2, hasTouch: true };
 
 /** Runs in the page. `reject` makes requestSession fail with that DOMException name. */
-function installFakeXR({ reject = null }) {
+function installFakeXR({ reject = null, grant = ['image-tracking', 'dom-overlay'] }) {
   const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
   const near = 0.02;
   const far = 60;
@@ -61,7 +62,7 @@ function installFakeXR({ reject = null }) {
     visibilityState = 'visible';
     constructor(init) {
       super();
-      this.enabledFeatures = [...(init.requiredFeatures ?? []), ...(init.optionalFeatures ?? [])];
+      this.enabledFeatures = [...(init.requiredFeatures ?? []), ...(init.optionalFeatures ?? []).filter((f) => grant.includes(f))];
     }
     updateRenderState(state) { Object.assign(this.renderState, state); }
     updateTargetFrameRate() { return Promise.resolve(); }
@@ -149,9 +150,9 @@ const near = (a, b) => Math.abs(a - b) < 1e-4;
 
   const request = await page.evaluate(() => {
     const r = window.__fakeXR.requests[0];
-    return { required: r.requiredFeatures, images: r.trackedImages.length, width: r.trackedImages[0].widthInMeters, bitmapWidth: r.trackedImages[0].image.width, activated: r.activated };
+    return { required: r.requiredFeatures, optional: r.optionalFeatures, images: r.trackedImages.length, width: r.trackedImages[0].widthInMeters, bitmapWidth: r.trackedImages[0].image.width, activated: r.activated };
   });
-  check('asks ARCore for image tracking as a required feature', request.required.includes('image-tracking'));
+  check('nothing the flag controls is required', !(request.required ?? []).includes('image-tracking'));
   check('session is requested inside the tap', request.activated);
   check('deep link registers one poster at the given print width', request.images === 1 && request.width === 0.42 && request.bitmapWidth === 1024, JSON.stringify(request));
   check('no MediaStream camera is opened', (await page.evaluate(() => document.querySelectorAll('video').length)) === 0 || (await page.evaluate(() => [...document.querySelectorAll('video')].every((v) => !v.srcObject))));
@@ -288,7 +289,7 @@ const near = (a, b) => Math.abs(a - b) < 1e-4;
 
 // ---- Session request failures ----
 for (const [reject, title, name] of [
-  ['NotSupportedError', 'Turn on image tracking', 'flag or ARCore missing explains how to enable it'],
+  ['NotSupportedError', 'Couldn’t start ARCore', 'ARCore missing is reported, with no mention of flags'],
   ['NotAllowedError', 'Camera access is off', 'denied permission gives instructions'],
   ['OperationError', 'Couldn’t start ARCore', 'other session failures are reported'],
 ]) {
@@ -327,6 +328,134 @@ for (const [reject, title, name] of [
   await page.getByRole('button', { name: 'Try again' }).click();
   await page.getByRole('button', { name: 'Start AR' }).waitFor({ timeout: 10000 });
   check('retry reloads the poster images', true);
+  await context.close();
+}
+
+// ---- No flag: the real recogniser in its worker, on a drawn camera image with a known camera path ----
+for (const flipped of [false, true]) {
+  const context = await browser.newContext(phone);
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
+  await page.addInitScript(installFakeXR, { grant: ['camera-access', 'dom-overlay'] });
+  await page.addInitScript(([targets, upsideDown]) => {
+    // A poster on a wall, 0.8 m in front of the path's start, and 0.4 m wide. The app assumes 0.6 m.
+    const W = 540;
+    const H = 1200;
+    const f = (H / 2) / Math.tan((60 * Math.PI) / 360);
+    const images = targets.map((url) => {
+      const image = new Image();
+      image.src = url;
+      return image;
+    });
+    const canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    const sim = { poster: 0, camera: [0, 0, 0], visible: true, width: 0.4, distance: 0.8, frames: 0 };
+    window.__sim = sim;
+    const textures = new WeakMap();
+    window.XRWebGLBindingFake = class {
+      constructor(_s, gl) { this.gl = gl; }
+      getCameraImage() {
+        const { gl } = this;
+        const image = images[sim.poster];
+        ctx.fillStyle = '#6b6f76';
+        ctx.fillRect(0, 0, W, H);
+        if (sim.visible && image.complete && image.naturalWidth) {
+          const d = sim.distance - sim.camera[2] * -1;
+          const px = (sim.width * f) / d;
+          const py = (px * image.naturalHeight) / image.naturalWidth;
+          const cx = W / 2 - (sim.camera[0] * f) / d;
+          const cy = H / 2 + (sim.camera[1] * f) / d;
+          ctx.drawImage(image, cx - px / 2, cy - py / 2, px, py);
+        }
+        let texture = textures.get(gl);
+        if (!texture) {
+          texture = gl.createTexture();
+          textures.set(gl, texture);
+        }
+        const previous = gl.getParameter(gl.TEXTURE_BINDING_2D);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, upsideDown);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.bindTexture(gl.TEXTURE_2D, previous);
+        sim.frames += 1;
+        return texture;
+      }
+    };
+    Object.defineProperty(window, 'XRWebGLBinding', { value: window.XRWebGLBindingFake, configurable: true });
+  }, [['assets/experiences/ceat-tyre/target.jpg', 'assets/experiences/basketball/target.jpg', 'assets/experiences/flower/target.jpg', 'assets/experiences/jelly/target.jpg', 'assets/experiences/love/target.jpg'].map((p) => base + p), flipped]);
+  await page.addInitScript(() => {
+    // The stand-in's camera view: a camera the simulation moves, matching the drawn image's lens.
+    const original = navigator.xr.requestSession;
+    navigator.xr.requestSession = async (mode, init) => {
+      const session = await original(mode, init);
+      const raf = session.requestAnimationFrame.bind(session);
+      session.requestAnimationFrame = (callback) =>
+        raf((t, frame) => {
+          const getViewerPose = frame.getViewerPose;
+          frame.getViewerPose = (space) => {
+            const pose = getViewerPose(space);
+            const [x, y, z] = window.__sim.camera;
+            const m = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1];
+            const transform = { matrix: new Float32Array(m), position: { x, y, z, w: 1 }, orientation: { x: 0, y: 0, z: 0, w: 1 } };
+            const p = new Float32Array(pose.views[0].projectionMatrix);
+            p[0] = p[5] * (1200 / 540);
+            return { transform, views: [{ eye: 'none', projectionMatrix: p, transform, camera: { width: 540, height: 1200 } }] };
+          };
+          callback(t, frame);
+        });
+      return session;
+    };
+  });
+  await page.goto(`${base}?debug`);
+  await page.getByRole('button', { name: 'Start AR' }).waitFor({ timeout: 15000 });
+  await start(page);
+  await waitPhase(page, 'scanning', 20000);
+  const label = flipped ? 'upside-down texture' : 'upright texture';
+
+  const started = Date.now();
+  await waitPhase(page, 'active', 40000);
+  const firstLock = Date.now() - started;
+  const found = await page.evaluate(() => window.__AR__.state().experience?.id);
+  check(`${label}: recognises the poster without the flag`, found === 'ceat-tyre', `${firstLock} ms including shader compile, found=${found}`);
+
+  // A short sideways and vertical sweep: this is what lets the true width be measured.
+  const path = [[0.08, 0, 0], [0.16, 0.05, 0], [0.08, 0.1, 0.05], [-0.06, 0.05, 0.1], [-0.14, -0.05, 0.05], [0, -0.1, 0], [0.12, 0, 0.08], [0, 0, 0]];
+  for (const camera of path) {
+    await page.evaluate((c) => { window.__sim.camera = c; }, camera);
+    await page.waitForTimeout(900);
+  }
+  const m = await anchor(page);
+  const stats = await page.evaluate(() => window.__AR__.stats());
+  const err = Math.hypot(m[12], m[13], m[14] + 0.8);
+  check(`${label}: poster position in the world is right`, err < 0.03, `off by ${(err * 100).toFixed(1)} cm, recognition ${stats.recogniseMs.toFixed(0)} ms`);
+  check(`${label}: true width measured from camera movement`, Math.abs(m[0] - 0.4) < 0.04, `${(m[0] * 100).toFixed(1)} cm, truly 40 cm, assumed 60 cm`);
+
+  if (!flipped) {
+    // Look away, then back: content must stay put, with no search.
+    await page.evaluate(() => { window.__sim.visible = false; });
+    await page.waitForTimeout(1500);
+    check('stays locked with the poster out of view', (await page.evaluate(() => window.__AR__.state().phase)) === 'active');
+    await page.evaluate(() => { window.__sim.visible = true; });
+
+    const t0 = Date.now();
+    await page.evaluate(() => { window.__sim.poster = 1; });
+    await page.waitForFunction(() => window.__AR__.state().experience?.id === 'basketball', null, { timeout: 15000 });
+    await waitPhase(page, 'active', 15000);
+    check('a different poster takes over', true, `${Date.now() - t0} ms`);
+    const t1 = Date.now();
+    await page.evaluate(() => { window.__sim.poster = 0; });
+    await page.waitForFunction(() => window.__AR__.state().experience?.id === 'ceat-tyre', null, { timeout: 15000 });
+    await waitPhase(page, 'active', 15000);
+    check('going back to a seen poster is quick', true, `${Date.now() - t1} ms`);
+    await shot(page, 'recogniser-active');
+  }
+  check(`${label}: no page errors`, errors.length === 0, errors.join(' | '));
   await context.close();
 }
 

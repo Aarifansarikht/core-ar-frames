@@ -9,6 +9,8 @@ import {
 } from 'three';
 import type { Experience, SurfaceKind } from '../content/Experience';
 import type { SceneManager } from '../core/SceneManager';
+import { CameraAccessError } from '../services/errors';
+import { PosterLocator, type XRCamera } from '../tracking/PosterLocator';
 import type { TrackingSink, TrackingStats } from '../types/ar';
 import type { TrackingAdapter } from './TrackingAdapter';
 
@@ -25,6 +27,10 @@ interface XRFrameWithImages extends XRFrame {
   getImageTrackingResults?(): ImageTrackingResult[];
 }
 
+interface XRCameraBinding {
+  getCameraImage(camera: XRCamera): WebGLTexture | null;
+}
+
 interface XRSessionWithImages extends XRSession {
   getTrackedImageScores?(): Promise<string[]>;
 }
@@ -34,6 +40,8 @@ export interface WebXROptions {
   scene: SceneManager;
   /** `poster` locks onto printed posters with ARCore image tracking. `room` places content by tapping. */
   mode: 'poster' | 'room';
+  /** Finds posters in the camera image when Chrome hasn't enabled ARCore's own image tracking. */
+  locator?: Omit<ConstructorParameters<typeof PosterLocator>[0], 'renderer'>;
   /** Null until content is ready to be placed. Read on each tap. */
   getPlaceable(): Experience | null;
   onPlacementState(state: PlacementState): void;
@@ -60,9 +68,11 @@ export function chooseImage<T extends { index: number; trackingState: string }>(
 }
 
 /**
- * ARCore through WebXR immersive-ar. In `poster` mode ARCore's image tracking locks printed posters,
- * which Chrome keeps behind chrome://flags/#webxr-incubations. In `room` mode, hit testing finds real
- * surfaces and anchors hold what was placed.
+ * ARCore through WebXR immersive-ar. In `room` mode, hit testing finds real surfaces and anchors hold
+ * what was placed. In `poster` mode there are two ways to lock printed posters, chosen automatically:
+ *  - ARCore's own image tracking, on phones where Chrome's webxr-incubations flag happens to be on
+ *  - otherwise PosterLocator, which recognises posters in the camera image and fixes them in ARCore's
+ *    world. That needs no flag, so it is what ordinary phones use.
  *
  * ARCore keeps a found poster's place in the room while it is out of view, reported as `emulated`.
  * Those poses are used as they are: content stays fixed in the room when the camera turns away, and is
@@ -86,6 +96,7 @@ export class WebXRAdapter implements TrackingAdapter {
   private unsubscribe: (() => void) | null = null;
   private state: PlacementState = 'searching';
   private readonly imageTracking: boolean;
+  private locator: PosterLocator | null = null;
   private readonly reticle: Mesh;
   private readonly contentFromSurface = new Matrix4();
   private readonly pose = new Matrix4();
@@ -97,7 +108,7 @@ export class WebXRAdapter implements TrackingAdapter {
   private imageScores: string[] = [];
 
   constructor(private readonly options: WebXROptions) {
-    this.imageTracking = options.mode === 'poster';
+    this.imageTracking = options.mode === 'poster' && (options.session.enabledFeatures?.includes('image-tracking') ?? false);
     this.reticle = new Mesh(
       new RingGeometry(0.09, 0.115, 48).rotateX(-Math.PI / 2),
       new MeshBasicMaterial({ color: 0xffffff, side: DoubleSide, transparent: true, opacity: 0.9, toneMapped: false }),
@@ -116,7 +127,11 @@ export class WebXRAdapter implements TrackingAdapter {
     this.localSpace = xr.getReferenceSpace();
     this.viewerSpace = await session.requestReferenceSpace('viewer');
 
-    if (this.imageTracking) {
+    if (this.options.mode === 'poster' && !this.imageTracking) {
+      if (!session.enabledFeatures?.includes('camera-access') || !this.options.locator) throw new CameraAccessError();
+      this.setState('poster-lock');
+      this.locator = new PosterLocator({ ...this.options.locator, renderer: scene.renderer });
+    } else if (this.imageTracking) {
       this.setState('poster-lock');
       void (session as XRSessionWithImages)
         .getTrackedImageScores?.()
@@ -148,6 +163,8 @@ export class WebXRAdapter implements TrackingAdapter {
     session.removeEventListener('end', this.onSessionEnd);
     this.hitSource?.cancel();
     this.hitSource = null;
+    this.locator?.dispose();
+    this.locator = null;
     this.anchor?.delete();
     this.anchor = null;
     this.reticle.removeFromParent();
@@ -158,23 +175,54 @@ export class WebXRAdapter implements TrackingAdapter {
 
   stats(): TrackingStats {
     return {
-      engine: this.imageTracking ? 'WebXR image tracking (ARCore)' : 'WebXR hit test + anchors (ARCore)',
+      engine: this.locator
+        ? 'ARCore world + camera recogniser'
+        : this.imageTracking
+          ? 'WebXR image tracking (ARCore)'
+          : 'WebXR hit test + anchors (ARCore)',
       trackFps: this.fps,
       confidence: this.imageState === 'tracked' || this.state === 'placed' ? 1 : this.imageState === 'emulated' ? 0.5 : 0,
       imageState: this.imageState,
       imageScores: this.imageScores,
-      measuredWidth: this.measuredWidth,
+      measuredWidth: this.locator?.width ?? this.measuredWidth,
+      recogniseMs: this.locator?.lastMs ?? 0,
     };
   }
 
   private onXRFrame(frame: XRFrame) {
-    if (this.imageTracking) {
+    if (this.locator) {
+      this.reportLocatedPoster(frame);
+    } else if (this.imageTracking) {
       this.reportImageTracking(frame as XRFrameWithImages);
     } else if (this.state === 'placed') {
       this.reportPlacedPose(frame);
     } else {
       this.updateReticle(frame);
     }
+  }
+
+  private reportLocatedPoster(frame: XRFrame) {
+    const locator = this.locator!;
+    const view = frame.getViewerPose(this.localSpace!)?.views[0];
+    if (!view) {
+      this.imageState = 'none';
+      this.sink?.miss();
+      return;
+    }
+    const xr = this.options.scene.renderer.xr;
+    locator.update(view, (camera) => (xr.getBinding() as unknown as XRCameraBinding | null)?.getCameraImage(camera) ?? null);
+    if (!locator.compose(this.pose)) {
+      this.imageState = 'none';
+      this.sink?.miss();
+      return;
+    }
+    this.imageState = locator.seenRecently ? 'tracked' : 'emulated';
+    this.sink?.pose({
+      targetIndex: locator.target,
+      matrix: this.pose,
+      confidence: locator.seenRecently ? 1 : 0.5,
+      time: performance.now() / 1000,
+    });
   }
 
   private reportImageTracking(frame: XRFrameWithImages) {

@@ -17,6 +17,7 @@ export function DebugHud() {
         `xr     ${s.trackFps.toFixed(0)} fps`,
         `image  ${s.imageState}  ${s.measuredWidth.toFixed(3)} m`,
         `scores ${s.imageScores.join(' ') || '-'}`,
+        `find   ${s.recogniseMs.toFixed(0)} ms  conf ${(s.confidence * 100).toFixed(0)}%`,
       ].join('\n');
     }, 300);
     return () => window.clearInterval(timer);

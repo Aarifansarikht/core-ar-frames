@@ -3,7 +3,10 @@ export type DeviceTier = 'low' | 'mid' | 'high';
 export interface QualityProfile {
   tier: DeviceTier;
   maxPixelRatio: number;
-  antialias: boolean;
+  /** Render size against the screen in AR. Camera image and tracking are unaffected. */
+  xrFramebufferScale: number;
+  /** Recogniser input short side, in pixels. */
+  recogniserShortSide: number;
 }
 
 interface NavigatorWithMemory extends Navigator {
@@ -21,10 +24,11 @@ export function detectTier(nav: NavigatorWithMemory = navigator): DeviceTier {
 export function qualityFor(tier: DeviceTier): QualityProfile {
   switch (tier) {
     case 'low':
-      return { tier, maxPixelRatio: 1.5, antialias: false };
+      return { tier, maxPixelRatio: 1.5, xrFramebufferScale: 0.7, recogniserShortSide: 360 };
     case 'mid':
+      return { tier, maxPixelRatio: 2, xrFramebufferScale: 0.85, recogniserShortSide: 420 };
     case 'high':
-      return { tier, maxPixelRatio: 2, antialias: true };
+      return { tier, maxPixelRatio: 2, xrFramebufferScale: 1, recogniserShortSide: 480 };
   }
 }
 

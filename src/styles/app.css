@@ -662,3 +662,9 @@ button {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Blurring what's behind the HUD means re-reading the composited AR frame: a real cost on phones. */
+:xr-overlay * {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}

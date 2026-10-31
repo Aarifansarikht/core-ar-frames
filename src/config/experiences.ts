@@ -109,9 +109,11 @@ export const EXPERIENCES: ExperienceConfig[] = [
   },
 ];
 
+export const targetsUrl = (id: string | null) => asset(`targets/${id ?? 'all'}.mind`);
+
 export const experienceById = (id: string | null | undefined) => EXPERIENCES.find((e) => e.id === id) ?? null;
 
-/** Used when `?w=` doesn't give the print's real width. ARCore locks and scales best with the true value. */
+/** Used when `?w=` doesn't give the print's real width, until the camera's movement reveals it. */
 const DEFAULT_PRINT_WIDTH_METERS = 0.6;
 
 /** `?w=` gives the printed width in metres; `?debug` shows live tracking stats. */
@@ -119,6 +121,8 @@ export interface RuntimeOptions {
   deepLink: ExperienceConfig | null;
   debug: boolean;
   printWidthMeters: number;
+  /** `?w=` was given, so the width is known and doesn't have to be measured. */
+  printWidthKnown: boolean;
 }
 
 export function readRuntimeOptions(search = window.location.search): RuntimeOptions {
@@ -128,5 +132,6 @@ export function readRuntimeOptions(search = window.location.search): RuntimeOpti
     deepLink: experienceById(params.get('t')),
     debug: params.has('debug'),
     printWidthMeters: width > 0 && width < 20 ? width : DEFAULT_PRINT_WIDTH_METERS,
+    printWidthKnown: width > 0 && width < 20,
   };
 }
