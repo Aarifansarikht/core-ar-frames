@@ -1,0 +1,348 @@
+/* The AR app locks the page to the screen. The admin panel is an ordinary page that can scroll. */
+html:has(.admin),
+html:has(.admin) body,
+html:has(.admin) #root {
+  position: static;
+  width: auto;
+  height: auto;
+  overflow: auto;
+  overscroll-behavior: auto;
+  touch-action: auto;
+  user-select: auto;
+  -webkit-user-select: auto;
+}
+
+.admin {
+  min-height: 100dvh;
+  padding: 16px;
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.admin--loading {
+  display: grid;
+  place-items: center;
+}
+
+.admin__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.admin h1 {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: -0.01em;
+}
+
+.admin h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.admin__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.admin__button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid var(--glass-line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.admin__button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.admin__button--primary {
+  border-color: transparent;
+  background: var(--accent);
+}
+
+.admin__status {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border-radius: 10px;
+}
+
+.admin__posters {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+  overflow-x: auto;
+}
+
+.admin__posters button {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px 6px 6px;
+  border: 1px solid var(--glass-line);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink-soft);
+  font: inherit;
+  cursor: pointer;
+}
+
+.admin__posters button[aria-pressed='true'] {
+  border-color: var(--accent);
+  background: rgba(38, 114, 255, 0.18);
+  color: var(--ink);
+}
+
+.admin__posters img {
+  width: 34px;
+  height: 34px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+.admin__tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--glass-line);
+}
+
+.admin__tabs button {
+  min-height: 40px;
+  padding: 0 14px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--ink-soft);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.admin__tabs button[aria-selected='true'] {
+  border-bottom-color: var(--accent);
+  color: var(--ink);
+}
+
+.admin__work {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 16px;
+  align-items: start;
+}
+
+.admin__stage {
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+}
+
+.admin__poster {
+  position: relative;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 72dvh;
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.admin__poster img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  filter: brightness(0.75);
+}
+
+.admin__poster canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.admin__zone {
+  position: absolute;
+  border: 2px solid;
+  pointer-events: none;
+}
+
+.admin__zone--track {
+  border-color: var(--ok);
+  background: rgba(61, 220, 151, 0.14);
+}
+
+.admin__zone--ignore {
+  border-color: var(--hot);
+  background: rgba(240, 40, 74, 0.26);
+}
+
+.admin__preview {
+  position: relative;
+  width: 100%;
+  height: 72dvh;
+  border-radius: 6px;
+  background: #1a1d24;
+  overflow: hidden;
+}
+
+.admin__preview canvas {
+  display: block;
+}
+
+.admin__preview p {
+  position: absolute;
+  inset: auto 12px 12px;
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+}
+
+.admin__controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--glass-line);
+  border-radius: 12px;
+}
+
+.admin__help,
+.admin__stat {
+  margin: 0;
+  color: var(--ink-soft);
+  line-height: 1.45;
+}
+
+.admin__stat strong {
+  color: var(--ink);
+  font-size: 18px;
+}
+
+.admin__choice {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.admin__choice legend {
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.admin__choice label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.admin__rating {
+  margin: 0;
+  line-height: 1.4;
+}
+
+.admin__rating--good {
+  color: var(--ok);
+}
+
+.admin__rating--warn {
+  color: var(--warn);
+}
+
+.admin__rating--bad {
+  color: #ff6b82;
+}
+
+.admin__zones {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.admin__zones li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.admin__zones button {
+  border: 0;
+  background: none;
+  color: var(--ink-soft);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.admin__slider {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 76px 12px;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.admin__slider span {
+  grid-column: 1 / -1;
+  color: var(--ink-soft);
+}
+
+.admin__slider input[type='range'] {
+  width: 100%;
+  min-width: 0;
+}
+
+.admin__slider input[type='number'] {
+  width: 100%;
+  min-height: 30px;
+  padding: 0 6px;
+  border: 1px solid var(--glass-line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+}
+
+.admin__slider em {
+  color: var(--ink-soft);
+  font-style: normal;
+}
+
+@media (max-width: 800px) {
+  .admin__work {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .admin__preview {
+    height: 50dvh;
+  }
+}

@@ -577,6 +577,68 @@ for (const [camera, title, name] of [
   await context.close();
 }
 
+// ---- Admin panel ----
+{
+  const context = await browser.newContext({ viewport: { width: 1280, height: 860 }, acceptDownloads: true });
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await page.goto(`${base}?admin`);
+  await page.getByRole('heading', { name: 'BAY81 AR admin' }).waitFor({ timeout: 15000 });
+  await page.waitForFunction(() => Number(document.querySelector('[data-testid=points-used]')?.textContent) > 0, null, { timeout: 15000 });
+  const count = () => page.getByTestId('points-used').innerText().then(Number);
+  const all = await count();
+  check('admin: shows the poster and its tracking points', all > 500, `${all} points`);
+  await shot(page, 'admin-area');
+
+  const box = await page.getByTestId('poster-area').boundingBox();
+  await page.getByLabel('Ignore this').check();
+  await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.1);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.9, box.y + box.height * 0.9, { steps: 4 });
+  await page.mouse.up();
+  const fewer = await count();
+  check('admin: drawing an ignored area removes its points', fewer < all, `${all} to ${fewer}`);
+  await shot(page, 'admin-ignore');
+
+  await page.getByRole('tab', { name: 'Content position' }).click();
+  await page.locator('[data-testid=content-preview] canvas').waitFor({ timeout: 10000 });
+  await page.getByLabel('Size value').fill('1.5');
+  await page.waitForTimeout(2500);
+  await shot(page, 'admin-content');
+
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Save changes' }).click();
+  const saved = JSON.parse(await (await (await download).createReadStream()).toArray().then((parts) => Buffer.concat(parts).toString()));
+  check('admin: without the dev server, saving downloads the settings', saved.posters['ceat-tyre'].zones.length === 1 && saved.posters['ceat-tyre'].content.scale === 1.5);
+  check('admin: no uncaught page errors', errors.length === 0, errors.join(' | '));
+  await context.close();
+}
+
+// ---- Saved settings reach the tracker and the content ----
+{
+  const context = await browser.newContext(phone);
+  const page = await context.newPage();
+  await page.addInitScript(installSimulatedPhone, CAMERA);
+  const settings = { posters: { 'ceat-tyre': { zones: [], content: { x: 0.1, y: 0, z: 0, rotateX: 0, rotateY: 0, rotateZ: 0, scale: 1.5 } }, jelly: { zones: [{ kind: 'ignore', x: 0, y: 0, width: 1, height: 1 }], content: {} } } };
+  await page.route('**/tracking.json', (route) => route.fulfill({ json: settings }));
+  await page.goto(`${base}?debug`);
+  await start(page);
+  await waitPhase(page, 'scanning', 30000);
+  await show(page, 'jelly');
+  await page.waitForTimeout(2500);
+  check('a poster with every point ignored is not tracked', (await phaseOf(page)) === 'scanning');
+  await show(page, 'ceat-tyre');
+  await waitPhase(page, 'active', 15000);
+  const root = await page.evaluate(() => {
+    const { anchor } = window.__AR__.runtime().scene;
+    const content = anchor.children.find((child) => child.visible);
+    return { x: content.position.x, scale: content.scale.x };
+  });
+  check('saved position and size are applied to content', Math.abs(root.x - 0.1) < 1e-6 && root.scale === 1.5, JSON.stringify(root));
+  await context.close();
+}
+
 // ---- Devices that can't run it ----
 {
   const context = await browser.newContext(phone);

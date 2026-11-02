@@ -1,6 +1,10 @@
 /** Messages between TrackerClient and the worker. */
+import type { TrackingZone } from '../config/tracking';
+
 export interface InitMessage {
   type: 'init';
+  /** For each target, which areas of it to track. */
+  zones: TrackingZone[][];
   /** The OpenCV script. */
   opencvUrl: string;
   /** One compiled poster per URL. Results refer to posters by their place in this list. */

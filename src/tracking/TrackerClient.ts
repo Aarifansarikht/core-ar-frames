@@ -1,3 +1,4 @@
+import type { TrackingZone } from '../config/tracking';
 import type { FrameResult, FromWorker, ToWorker } from './protocol';
 
 /**
@@ -16,7 +17,7 @@ export class TrackerClient {
   private readonly ready: Promise<void>;
   private busy = false;
 
-  constructor(opencvUrl: string, targetUrls: string[]) {
+  constructor(opencvUrl: string, targetUrls: string[], zones: TrackingZone[][]) {
     this.ready = new Promise((resolve, reject) => {
       this.worker.onerror = (event) => {
         const detail = event.message || 'The tracker failed to load';
@@ -36,7 +37,7 @@ export class TrackerClient {
         }
       };
     });
-    this.send({ type: 'init', opencvUrl, targetUrls });
+    this.send({ type: 'init', opencvUrl, targetUrls, zones });
   }
 
   /** Resolves when OpenCV and the posters have loaded. */

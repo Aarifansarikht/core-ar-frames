@@ -1,4 +1,5 @@
 /// <reference lib="webworker" />
+import { zoneAllows, type TrackingZone } from '../config/tracking';
 import type { FromWorker, PosterPose, ToWorker } from './protocol';
 
 /**
@@ -109,6 +110,8 @@ interface Target {
   offset: number;
   count: number;
   points: Float32Array;
+  /** The features inside the areas chosen in the admin panel. The others are never used. */
+  usable: number[];
   /** The poster's own image in grey, then at half that size, and so on. */
   images: Mat[];
 }
@@ -159,7 +162,7 @@ async function loadOpenCv(url: string) {
 }
 
 /** See scripts/compile-targets.mjs for the format. */
-async function loadTargets(urls: string[]) {
+async function loadTargets(urls: string[], zones: TrackingZone[][]) {
   const files = await Promise.all(
     urls.map(async (url) => {
       const response = await fetch(url);
@@ -170,7 +173,8 @@ async function loadTargets(urls: string[]) {
   const total = files.reduce((sum, file) => sum + new DataView(file).getUint32(0, true), 0);
   const trainBytes = new Uint8Array(total * DESCRIPTOR_BYTES);
   let offset = 0;
-  targets = files.map((file) => {
+  const usableTrain: number[] = [];
+  targets = files.map((file, targetIndex) => {
     const view = new DataView(file);
     const count = view.getUint32(0, true);
     const imageWidth = view.getUint32(8, true);
@@ -185,7 +189,16 @@ async function loadTargets(urls: string[]) {
       cv.pyrDown(images[level - 1], smaller);
       images.push(smaller);
     }
-    const target = { aspect: view.getFloat32(4, true), offset, count, points: new Float32Array(file, 16, count * 2), images };
+    const aspect = view.getFloat32(4, true);
+    const points = new Float32Array(file, 16, count * 2);
+    const usable: number[] = [];
+    for (let i = 0; i < count; i += 1) {
+      if (zoneAllows(zones[targetIndex] ?? [], points[i * 2] + 0.5, 0.5 - points[i * 2 + 1] / aspect)) {
+        usable.push(i);
+        usableTrain.push(offset + i);
+      }
+    }
+    const target = { aspect, offset, count, points, usable, images };
     offset += count;
     return target;
   });
@@ -193,7 +206,7 @@ async function loadTargets(urls: string[]) {
   seenAt = new Int32Array(total);
   buckets = INDEX_BYTES.map((at) => {
     const table: number[][] = Array.from({ length: 256 }, () => []);
-    for (let i = 0; i < total; i += 1) table[trainBytes[i * DESCRIPTOR_BYTES + at]].push(i);
+    for (const i of usableTrain) table[trainBytes[i * DESCRIPTOR_BYTES + at]].push(i);
     return table;
   });
 }
@@ -399,11 +412,11 @@ function refine(gray: Mat, h: number[], index: number, effort = REFINE_QUICK) {
 
   // Which of the poster's points are in view, and where they should be.
   // Fine detail from a poster's largest size disappears when it is far away, so this takes from every size.
-  const step = Math.max(1, target.count / effort.points);
+  const step = Math.max(1, target.usable.length / effort.points);
   const fromImage: number[] = [];
   const posterPoints: number[] = [];
-  for (let n = 0; n < target.count; n += step) {
-    const i = Math.floor(n);
+  for (let n = 0; n < target.usable.length; n += step) {
+    const i = target.usable[Math.floor(n)];
     const x = target.points[i * 2];
     const y = target.points[i * 2 + 1];
     const [u, v] = project(h, x, y);
@@ -671,7 +684,7 @@ ctx.onmessage = async ({ data }: MessageEvent<ToWorker>) => {
   try {
     if (data.type === 'init') {
       cv = await loadOpenCv(data.opencvUrl);
-      await loadTargets(data.targetUrls);
+      await loadTargets(data.targetUrls, data.zones);
       orb = new cv.ORB(FEATURES);
       orb.setFastThreshold(FAST_THRESHOLD);
       noMask = new cv.Mat();

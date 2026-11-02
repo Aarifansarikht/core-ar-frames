@@ -1,5 +1,6 @@
 import { Raycaster, Vector2 } from 'three';
 import { VisionAdapter, type PlacementState } from '../adapters/VisionAdapter';
+import { applyContentAdjustment, settingsFor, type TrackingSettings } from '../config/tracking';
 import { EXPERIENCES, type ExperienceConfig, type HotspotConfig, type RuntimeOptions } from '../config/experiences';
 import type { Experience } from '../content/Experience';
 import { TyreExperience } from '../content/TyreExperience';
@@ -55,11 +56,13 @@ export class ARRuntime {
   private readonly raycaster = new Raycaster();
   private readonly pointer = new Vector2();
   private disposed = false;
+  private onPoster = false;
 
   constructor(
     private readonly container: HTMLElement,
     private readonly tracker: TrackerClient,
     private readonly options: RuntimeOptions,
+    private readonly settings: TrackingSettings,
     private readonly events: RuntimeEvents,
   ) {
     this.tracking = new TrackingManager({
@@ -73,6 +76,7 @@ export class ARRuntime {
 
   /** Locks posters. */
   async startPosterTracking() {
+    this.onPoster = true;
     await this.startCamera('poster');
     const deepLink = this.options.deepLink;
     window.addEventListener('click', this.onTap);
@@ -168,6 +172,8 @@ export class ARRuntime {
           experience.dispose();
         } else {
           experience.root.visible = false;
+          // Set up against a print, so this doesn't apply to content standing in the room.
+          if (this.onPoster) applyContentAdjustment(experience.root, settingsFor(this.settings, config.id).content);
           this.scene!.anchor.add(experience.root);
         }
         return experience;

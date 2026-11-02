@@ -1,4 +1,5 @@
 import type { PlacementState } from '../adapters/VisionAdapter';
+import { loadTrackingSettings, settingsFor, type TrackingSettings } from '../config/tracking';
 import { EXPERIENCES, opencvUrl, readRuntimeOptions, targetUrl, type ExperienceConfig, type HotspotConfig, type RuntimeOptions } from '../config/experiences';
 import { detectCapabilities, type Capabilities } from '../services/capabilities';
 import { describeError, EngineError } from '../services/errors';
@@ -56,6 +57,7 @@ export class ARManager {
   private recoveredTimer = 0;
   private poseLog: { t: number; m: number[]; c: number }[] = [];
   private tracker: TrackerClient | null = null;
+  private settings: TrackingSettings = {};
 
   constructor() {
     if (!this.capabilities.unsupported) void this.prepare();
@@ -149,9 +151,11 @@ export class ARManager {
   /** Loads the tracker before it's needed, so that the session can start as soon as the user asks. */
   private async prepare() {
     const list = this.options.deepLink ? [this.options.deepLink] : EXPERIENCES;
+    this.settings = await loadTrackingSettings();
     const tracker = new TrackerClient(
       opencvUrl(),
       list.map(({ id }) => targetUrl(id)),
+      list.map(({ id }) => settingsFor(this.settings, id).zones),
     );
     try {
       await tracker.whenReady();
@@ -176,7 +180,7 @@ export class ARManager {
   private async createRuntime() {
     const { ARRuntime } = await import('./ARRuntime');
     if (!this.container) throw new Error('AR container is not mounted');
-    return new ARRuntime(this.container, this.tracker!, this.options, {
+    return new ARRuntime(this.container, this.tracker!, this.options, this.settings, {
       cameraGranted: () => {
         if (this.state.phase === 'permission') this.set({ phase: 'initializing' });
       },

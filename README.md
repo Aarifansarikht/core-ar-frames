@@ -101,12 +101,23 @@ Good targets have detail spread across the whole image, high contrast, and no la
 
 The extension matters: **don't use `.bin`.** Chrome returned an empty response for `.bin` files in testing here, while the same data with other extensions came through, and the cause wasn't identified.
 
+## Admin panel
+
+Open `/?admin`. Choose a poster, then use either tab:
+
+- **Tracking area:** the dots are the points used to track the poster. Drag a rectangle to **track only there** or **ignore** it, for example to skip an area that will be covered or changed on the print. The panel shows how many points remain, with a rough rating. Check the result with **Test with camera**.
+- **Content position:** move, rotate and resize the content against a picture of its poster. This applies when it is tracked on a poster, not when placed in the room.
+
+**Saving:** under `npm run dev`, **Save changes** writes `public/assets/tracking.json`, and only from the same computer. Commit and push it to publish. On any other site, including the live one, the panel can't change anything: saving downloads `tracking.json`, which has to replace that file in the project. So the panel needs no login, although anyone who opens `/?admin` on the live site can see it.
+
+The tracker reads areas when the page loads, so changes need no recompiling. New posters still go through [Adding a poster](#adding-a-poster).
+
 ## Test status
 
 ### Verified
 
 - `npm run build` passes, including from a clean install.
-- `npm run test:ui` passes 50 of 50 in desktop Chrome, with **our real tracker looking at a simulated camera**: a poster drawn in 3D over a cluttered room, fed through `getUserMedia`, with a known pose to compare against. It covers all phases, hotspot taps, room placement, denied permissions, missing assets, closing and retry, plus an iPhone user agent and motion prompt.
+- `npm run test:ui` passes 56 of 56 in desktop Chrome, with **our real tracker looking at a simulated camera**: a poster drawn in 3D over a cluttered room, fed through `getUserMedia`, with a known pose to compare against. It covers all phases, hotspot taps, room placement, denied permissions, missing assets, closing and retry, plus an iPhone user agent and motion prompt.
 
 | Measured on a desktop, in a simulation | Result |
 | --- | --- |
