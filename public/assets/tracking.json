@@ -1,3 +1,24 @@
 {
-  "posters": {}
+  "posters": {
+    "basketball": {
+      "zones": [
+        {
+          "kind": "track",
+          "x": 0.036442069342948205,
+          "y": 0.04269004454820497,
+          "width": 0.24311882303705373,
+          "height": 0.16161231150391883
+        }
+      ],
+      "content": {
+        "x": 0,
+        "y": 0,
+        "z": 0,
+        "rotateX": 0,
+        "rotateY": 0,
+        "rotateZ": 0,
+        "scale": 1
+      }
+    }
+  }
 }
